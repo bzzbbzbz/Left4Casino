@@ -4,7 +4,7 @@ from sys import stdout
 
 import structlog
 from structlog import WriteLoggerFactory
-from structlog.typing import WrappedLogger, EventDict
+from structlog.typing import EventDict, WrappedLogger
 
 from bot.config_reader import LogConfig, LogRenderer
 
@@ -13,17 +13,13 @@ class ProjectNameProcessor:
     def __init__(self, project_name: str):
         self.project_name = project_name
 
-    def __call__(
-        self, logger: WrappedLogger, name: str, event_dict: EventDict
-    ) -> EventDict:
+    def __call__(self, logger: WrappedLogger, name: str, event_dict: EventDict) -> EventDict:
         event_dict["project_name"] = self.project_name
         return event_dict
 
 
 class DropAiogramUpdateEvents:
-    def __call__(
-        self, logger: WrappedLogger, name: str, event_dict: EventDict
-    ) -> EventDict:
+    def __call__(self, logger: WrappedLogger, name: str, event_dict: EventDict) -> EventDict:
         event = event_dict.get("event", "")
         # Aiogram usually logs: "Update id=%s is handled. Duration %d ms by bot id=%d"
         if isinstance(event, str) and "Update id=" in event and "is handled" in event:
@@ -41,9 +37,7 @@ def get_structlog_config(log_config: LogConfig) -> dict:
         # Create handler for stdlib logging
         standard_handler = logging.StreamHandler(stream=stdout)
         standard_handler.setFormatter(
-            structlog.stdlib.ProcessorFormatter(
-                processors=get_processors(log_config)
-            )
+            structlog.stdlib.ProcessorFormatter(processors=get_processors(log_config))
         )
 
         # Configure root logger to use this handler
@@ -51,12 +45,11 @@ def get_structlog_config(log_config: LogConfig) -> dict:
         standard_logger.addHandler(standard_handler)
         standard_logger.setLevel(logging.DEBUG if log_config.show_debug_logs else logging.INFO)
 
-
     return {
         "processors": get_processors(log_config),
         "cache_logger_on_first_use": True,
         "wrapper_class": structlog.make_filtering_bound_logger(min_level),
-        "logger_factory": WriteLoggerFactory()
+        "logger_factory": WriteLoggerFactory(),
     }
 
 
@@ -81,9 +74,9 @@ def get_processors(log_config: LogConfig) -> list:
     processors = list()
     processors.append(DropAiogramUpdateEvents())
     if log_config.show_datetime is True:
-        processors.append(structlog.processors.TimeStamper(
-            fmt=log_config.datetime_format,
-            utc=log_config.time_in_utc
+        processors.append(
+            structlog.processors.TimeStamper(
+                fmt=log_config.datetime_format, utc=log_config.time_in_utc
             )
         )
 
@@ -94,8 +87,7 @@ def get_processors(log_config: LogConfig) -> list:
         processors.append(structlog.processors.format_exc_info)
         processors.append(structlog.processors.JSONRenderer(serializer=custom_json_serializer))
     else:
-        processors.append(structlog.dev.ConsoleRenderer(
-            colors=log_config.use_colors_in_console,
-            pad_level=False
-        ))
+        processors.append(
+            structlog.dev.ConsoleRenderer(colors=log_config.use_colors_in_console, pad_level=False)
+        )
     return processors

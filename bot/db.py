@@ -1,13 +1,16 @@
-import aiosqlite
 from pathlib import Path
+
+import aiosqlite
+
 from bot.utils.context import add_db_action
+
 
 class Database:
     def __init__(self, db_path: str = None):
         if db_path is None:
-             self.db_path = str(Path(__file__).parent / "casino.db")
+            self.db_path = str(Path(__file__).parent / "casino.db")
         else:
-             self.db_path = db_path
+            self.db_path = db_path
 
     async def create_tables(self):
         async with aiosqlite.connect(self.db_path) as db:
@@ -22,7 +25,7 @@ class Database:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
+
             # 2. Event history table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS event_history (
@@ -72,7 +75,7 @@ class Database:
                     FOREIGN KEY(user_id) REFERENCES users(user_id)
                 )
             """)
-            
+
             # Attempt to migrate existing users table (add new columns if missing)
             # This is a basic migration strategy for development
             try:
@@ -88,7 +91,9 @@ class Database:
             except Exception:
                 pass
             try:
-                await db.execute("ALTER TABLE users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+                await db.execute(
+                    "ALTER TABLE users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                )
             except Exception:
                 pass
             try:
@@ -126,34 +131,41 @@ class Database:
             # Get all unique users from event_history
             async with db.execute("SELECT DISTINCT user_id FROM event_history") as cursor:
                 users = await cursor.fetchall()
-            
+
             for (user_id,) in users:
-                if user_id is None: continue
-                
+                if user_id is None:
+                    continue
+
                 # Calculate stats
-                async with db.execute("""
-                    SELECT 
+                async with db.execute(
+                    """
+                    SELECT
                         COUNT(*) as games,
                         SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as won,
                         SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as lost
-                    FROM event_history 
+                    FROM event_history
                     WHERE user_id = ? AND event_type IN ('win', 'loss')
-                """, (user_id,)) as stats_cursor:
+                """,
+                    (user_id,),
+                ) as stats_cursor:
                     row = await stats_cursor.fetchone()
                     if row:
                         games, won, lost = row
                         games = games or 0
                         won = won or 0
                         lost = lost or 0
-                        
-                        await db.execute("""
-                            UPDATE users 
+
+                        await db.execute(
+                            """
+                            UPDATE users
                             SET games_played = ?,
                                 total_won = ?,
                                 total_lost = ?
                             WHERE user_id = ?
-                        """, (games, won, lost, user_id))
-            
+                        """,
+                            (games, won, lost, user_id),
+                        )
+
             await db.commit()
         print("Stats backfill completed.")
 
@@ -167,43 +179,49 @@ class Database:
             # Get all distinct users from event_history
             async with db.execute("SELECT DISTINCT user_id FROM event_history") as cursor:
                 users = await cursor.fetchall()
-            
+
             for (user_id,) in users:
-                if user_id is None: continue
-                
+                if user_id is None:
+                    continue
+
                 # Get all events for user ordered by time
-                async with db.execute("SELECT event_type, amount, created_at FROM event_history WHERE user_id = ? ORDER BY created_at ASC", (user_id,)) as event_cursor:
+                async with db.execute(
+                    "SELECT event_type, amount, created_at FROM event_history WHERE user_id = ? ORDER BY created_at ASC",
+                    (user_id,),
+                ) as event_cursor:
                     events = await event_cursor.fetchall()
-                
+
                 # Filter out existing bankruptcy events to avoid duplicates, but keep them for checking
-                existing_bankruptcy_timestamps = {row[2] for row in events if row[0] == 'bankruptcy'}
-                
+                existing_bankruptcy_timestamps = {
+                    row[2] for row in events if row[0] == "bankruptcy"
+                }
+
                 # Replay balance
-                balance = 50 
+                balance = 50
                 bk_count = 0
                 was_bankrupt = False
-                
-                # We need to iterate non-bankruptcy events to calculate balance, 
+
+                # We need to iterate non-bankruptcy events to calculate balance,
                 # but we also need to know if a bankruptcy event ALREADY exists for a bankruptcy moment.
-                # Since we can't easily match "moment" to "event" without complex logic, 
-                # we will rely on a heuristic: if we detect bankruptcy, and there is no 'bankruptcy' event 
+                # Since we can't easily match "moment" to "event" without complex logic,
+                # we will rely on a heuristic: if we detect bankruptcy, and there is no 'bankruptcy' event
                 # within a small window (e.g. same second), we insert it.
-                # ACTUALLY, simpler: 
+                # ACTUALLY, simpler:
                 # existing_bankruptcy_timestamps is a set of strings.
                 # We will insert a bankruptcy event with the SAME timestamp as the triggering event if it doesn't exist.
-                
+
                 for event_type, amount, created_at in events:
-                    if event_type == 'bankruptcy':
+                    if event_type == "bankruptcy":
                         continue
-                        
+
                     val = amount if amount is not None else 0
                     balance += val
-                    
+
                     if balance <= 0:
                         if not was_bankrupt:
                             bk_count += 1
                             was_bankrupt = True
-                            
+
                             # Check if we need to insert event
                             # We look for a bankruptcy event at the exact same time (or extremely close)
                             # Since we want to attribute it to this moment, let's check if we have one.
@@ -212,54 +230,69 @@ class Database:
                             # Let's check if there is a bankruptcy event within +/- 1 second?
                             # For simplicity/robustness: if we are backfilling, we can just insert with the timestamp of the trigger.
                             # But we must avoid creating duplicates if we run this script multiple times.
-                            
+
                             # Let's assume if we found a bankruptcy state transition, we should have an event.
                             # If existing_bankruptcy_timestamps has this created_at, skip.
                             # But created_at is string.
-                            
+
                             if created_at not in existing_bankruptcy_timestamps:
                                 import uuid
+
                                 # Insert missing bankruptcy event
                                 # We use the timestamp of the event that caused bankruptcy
                                 await db.execute(
                                     "INSERT INTO event_history (event_id, user_id, event_type, amount, created_at) VALUES (?, ?, 'bankruptcy', 0, ?)",
-                                    (str(uuid.uuid4()), user_id, created_at)
+                                    (str(uuid.uuid4()), user_id, created_at),
                                 )
                                 # Add to set to avoid duplicate if we iterate again (though we iterate list copy)
                                 existing_bankruptcy_timestamps.add(created_at)
-                                print(f"Backfilled bankruptcy event for user {user_id} at {created_at}")
+                                print(
+                                    f"Backfilled bankruptcy event for user {user_id} at {created_at}"
+                                )
 
                     else:
                         was_bankrupt = False
-                
+
                 # Update user stats
                 if bk_count > 0:
-                    await db.execute("UPDATE users SET bankruptcy_count = ? WHERE user_id = ?", (bk_count, user_id))
-            
+                    await db.execute(
+                        "UPDATE users SET bankruptcy_count = ? WHERE user_id = ?",
+                        (bk_count, user_id),
+                    )
+
             await db.commit()
         print("Bankruptcy backfill completed.")
 
     async def get_balance(self, user_id: int, default_balance: int = 0) -> int:
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            async with db.execute(
+                "SELECT balance FROM users WHERE user_id = ?", (user_id,)
+            ) as cursor:
                 row = await cursor.fetchone()
                 if row:
                     return row[0]
-                
+
                 # Если пользователя нет, создаем его
-                await db.execute("INSERT INTO users (user_id, balance, bid) VALUES (?, ?, 1)", (user_id, default_balance))
+                await db.execute(
+                    "INSERT INTO users (user_id, balance, bid) VALUES (?, ?, 1)",
+                    (user_id, default_balance),
+                )
                 await db.commit()
                 return default_balance
 
     async def update_balance(self, user_id: int, amount: int):
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+            await db.execute(
+                "UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id)
+            )
             await db.commit()
             add_db_action(f"Updated balance for user {user_id} by {amount}")
-            
+
     async def set_balance(self, user_id: int, new_balance: int):
-         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE users SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE users SET balance = ? WHERE user_id = ?", (new_balance, user_id)
+            )
             await db.commit()
             add_db_action(f"Set balance for user {user_id} to {new_balance}")
 
@@ -280,8 +313,10 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             # Remove @ if present
-            clean_nickname = nickname.lstrip('@')
-            async with db.execute("SELECT * FROM users WHERE nickname = ? COLLATE NOCASE", (clean_nickname,)) as cursor:
+            clean_nickname = nickname.lstrip("@")
+            async with db.execute(
+                "SELECT * FROM users WHERE nickname = ? COLLATE NOCASE", (clean_nickname,)
+            ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
@@ -296,7 +331,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT OR IGNORE INTO users (user_id, nickname, balance, bid) VALUES (?, ?, 50, 1)",
-                (user_id, nickname)
+                (user_id, nickname),
             )
             # Always update nickname in case it changed
             await db.execute("UPDATE users SET nickname = ? WHERE user_id = ?", (nickname, user_id))
@@ -315,56 +350,86 @@ class Database:
             lost_add = abs(amount) if amount < 0 else 0
             bankruptcy_add = 1 if is_bankruptcy else 0
 
-            await db.execute("""
-                UPDATE users 
+            await db.execute(
+                """
+                UPDATE users
                 SET games_played = games_played + 1,
                     total_won = total_won + ?,
                     total_lost = total_lost + ?,
                     bankruptcy_count = bankruptcy_count + ?
                 WHERE user_id = ?
-            """, (won_add, lost_add, bankruptcy_add, user_id))
+            """,
+                (won_add, lost_add, bankruptcy_add, user_id),
+            )
             await db.commit()
-            add_db_action(f"Updated stats for user {user_id}: won={won_add}, lost={lost_add}, bankrupt={bankruptcy_add}")
+            add_db_action(
+                f"Updated stats for user {user_id}: won={won_add}, lost={lost_add}, bankrupt={bankruptcy_add}"
+            )
 
-    async def add_event(self, event_id: str, user_id: int, event_type: str, amount: int, metadata: str = None, chat_id: int = None):
+    async def add_event(
+        self,
+        event_id: str,
+        user_id: int,
+        event_type: str,
+        amount: int,
+        metadata: str = None,
+        chat_id: int = None,
+    ):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT INTO event_history (event_id, user_id, event_type, amount, metadata, chat_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (event_id, user_id, event_type, amount, metadata, chat_id)
+                (event_id, user_id, event_type, amount, metadata, chat_id),
             )
             await db.commit()
-            add_db_action(f"Added event {event_id} for user {user_id}: {event_type}, amount={amount}, chat={chat_id}")
+            add_db_action(
+                f"Added event {event_id} for user {user_id}: {event_type}, amount={amount}, chat={chat_id}"
+            )
 
     async def get_last_credit_event(self, user_id: int):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT created_at FROM event_history WHERE user_id = ? AND event_type = 'credit_grant' ORDER BY created_at DESC LIMIT 1",
-                (user_id,)
+                (user_id,),
             ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
-    async def transfer_money(self, from_user_id: int, to_user_id: int, amount: int, event_id_out: str, event_id_in: str, chat_id: int = None):
+    async def transfer_money(
+        self,
+        from_user_id: int,
+        to_user_id: int,
+        amount: int,
+        event_id_out: str,
+        event_id_in: str,
+        chat_id: int = None,
+    ):
         async with aiosqlite.connect(self.db_path) as db:
             # Check balance
-            async with db.execute("SELECT balance FROM users WHERE user_id = ?", (from_user_id,)) as cursor:
+            async with db.execute(
+                "SELECT balance FROM users WHERE user_id = ?", (from_user_id,)
+            ) as cursor:
                 row = await cursor.fetchone()
                 if not row or row[0] < amount:
                     return False
-            
+
             # Transaction
             try:
-                await db.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, from_user_id))
-                await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, to_user_id))
-                
+                await db.execute(
+                    "UPDATE users SET balance = balance - ? WHERE user_id = ?",
+                    (amount, from_user_id),
+                )
+                await db.execute(
+                    "UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, to_user_id)
+                )
+
                 await db.execute(
                     "INSERT INTO event_history (event_id, user_id, event_type, amount, chat_id) VALUES (?, ?, 'transfer_out', ?, ?)",
-                    (event_id_out, from_user_id, -amount, chat_id)
+                    (event_id_out, from_user_id, -amount, chat_id),
                 )
                 await db.execute(
                     "INSERT INTO event_history (event_id, user_id, event_type, amount, chat_id) VALUES (?, ?, 'transfer_in', ?, ?)",
-                    (event_id_in, to_user_id, amount, chat_id)
+                    (event_id_in, to_user_id, amount, chat_id),
                 )
 
                 # Check for bankruptcy for sender
@@ -372,26 +437,29 @@ class Database:
                 new_balance = row[0] - amount
                 if new_balance <= 0:
                     import uuid
+
                     await db.execute(
                         "INSERT INTO event_history (event_id, user_id, event_type, amount, chat_id) VALUES (?, ?, 'bankruptcy', 0, ?)",
-                        (str(uuid.uuid4()), from_user_id, chat_id)
+                        (str(uuid.uuid4()), from_user_id, chat_id),
                     )
                     await db.execute(
-                        "UPDATE users SET bankruptcy_count = bankruptcy_count + 1 WHERE user_id = ?", 
-                        (from_user_id,)
+                        "UPDATE users SET bankruptcy_count = bankruptcy_count + 1 WHERE user_id = ?",
+                        (from_user_id,),
                     )
 
                 await db.commit()
-                add_db_action(f"Transferred {amount} from {from_user_id} to {to_user_id} in chat {chat_id}")
+                add_db_action(
+                    f"Transferred {amount} from {from_user_id} to {to_user_id} in chat {chat_id}"
+                )
                 return True
             except Exception:
-                # aiosqlite context manager automatically rolls back on exception if not committed, 
-                # but we are inside a context manager for connect, not transaction. 
-                # However, without BEGIN TRANSACTION explicitly, sqlite is in auto-commit mode usually, 
-                # but aiosqlite might handle it. 
+                # aiosqlite context manager automatically rolls back on exception if not committed,
+                # but we are inside a context manager for connect, not transaction.
+                # However, without BEGIN TRANSACTION explicitly, sqlite is in auto-commit mode usually,
+                # but aiosqlite might handle it.
                 # Ideally we should use `await db.execute("BEGIN TRANSACTION")` but let's trust the context or simple sequential execution for now.
                 # Actually aiosqlite connect context commits at the end if no error.
-                # If we raise here, it might rollback. 
+                # If we raise here, it might rollback.
                 # Let's add explicit rollback just in case.
                 await db.rollback()
                 return False
@@ -400,7 +468,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT INTO ai_credit_sessions (session_id, user_id, status) VALUES (?, ?, 'active')",
-                (session_id, user_id)
+                (session_id, user_id),
             )
             await db.commit()
 
@@ -409,7 +477,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM ai_credit_sessions WHERE user_id = ? AND status IN ('active', 'processing')",
-                (user_id,)
+                (user_id,),
             ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
@@ -418,7 +486,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "UPDATE ai_credit_sessions SET status = 'processing' WHERE session_id = ? AND status = 'active'",
-                (session_id,)
+                (session_id,),
             )
             await db.commit()
             return cursor.rowcount > 0
@@ -434,10 +502,10 @@ class Database:
     async def close_credit_session(self, session_id: str, status: str, score: int, reward: int):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                """UPDATE ai_credit_sessions 
-                   SET status = ?, ai_score = ?, reward_amount = ?, finished_at = CURRENT_TIMESTAMP 
+                """UPDATE ai_credit_sessions
+                   SET status = ?, ai_score = ?, reward_amount = ?, finished_at = CURRENT_TIMESTAMP
                    WHERE session_id = ?""",
-                (status, score, reward, session_id)
+                (status, score, reward, session_id),
             )
             await db.commit()
 
@@ -445,7 +513,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT INTO ai_dialogue_messages (session_id, role, content) VALUES (?, ?, ?)",
-                (session_id, role, content)
+                (session_id, role, content),
             )
             await db.commit()
 
@@ -454,7 +522,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT role, content FROM ai_dialogue_messages WHERE session_id = ? ORDER BY created_at ASC",
-                (session_id,)
+                (session_id,),
             ) as cursor:
                 rows = await cursor.fetchall()
                 # We want the last N messages, but in chronological order.
@@ -465,7 +533,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT OR REPLACE INTO user_groups (user_id, chat_id, last_seen) VALUES (?, ?, CURRENT_TIMESTAMP)",
-                (user_id, chat_id)
+                (user_id, chat_id),
             )
             await db.commit()
             add_db_action(f"Updated user group for user {user_id} in chat {chat_id}")
@@ -485,12 +553,12 @@ class Database:
             # - bankruptcy count (count of bankruptcy events)
             # - total given (sum of abs amounts in transfer_out)
             # - max win (max positive amount in win/loss)
-            
+
             # Note: SQLite doesn't have a simple pivot, so we use conditional aggregation.
             # Added: avg_bid calculation (parsing JSON is expensive but feasible for daily stats)
             # We extract 'bid' from metadata JSON if event_type is win/loss
             query = """
-                SELECT 
+                SELECT
                     u.user_id,
                     u.nickname,
                     COUNT(CASE WHEN eh.event_type IN ('win', 'loss') THEN 1 END) as games_played,
@@ -504,14 +572,14 @@ class Database:
                 JOIN event_history eh ON u.user_id = eh.user_id
                 WHERE eh.created_at BETWEEN ? AND ?
             """
-            
+
             params = [start_time_utc, end_time_utc]
             if chat_id:
                 query += " AND eh.chat_id = ?"
                 params.append(chat_id)
-                
+
             query += " GROUP BY u.user_id, u.nickname"
-            
+
             async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
@@ -521,10 +589,10 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT 
-                    u.user_id, 
-                    u.nickname, 
-                    u.balance, 
+                SELECT
+                    u.user_id,
+                    u.nickname,
+                    u.balance,
                     COALESCE(stats.games_played, 0) as games_played,
                     COALESCE(stats.total_won, 0) as total_won,
                     COALESCE(stats.total_lost, 0) as total_lost,
@@ -532,7 +600,7 @@ class Database:
                 FROM users u
                 JOIN user_groups ug ON u.user_id = ug.user_id
                 LEFT JOIN (
-                    SELECT 
+                    SELECT
                         user_id,
                         COUNT(CASE WHEN event_type IN ('win', 'loss') THEN 1 END) as games_played,
                         SUM(CASE WHEN event_type IN ('win') AND amount > 0 THEN amount ELSE 0 END) as total_won,
@@ -546,9 +614,7 @@ class Database:
                 ORDER BY u.balance DESC
                 LIMIT ?
                 """,
-                (chat_id, chat_id, limit)
+                (chat_id, chat_id, limit),
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
-
-

@@ -15,7 +15,9 @@ def get_fluent_localization() -> FluentLocalization:
     selected_language_dir = real_languages_subdirs[0]
 
     # Find all .ftl files inside the selected language directory
-    ftl_files = [f.name for f in selected_language_dir.iterdir() if f.is_file() and f.suffix == ".ftl"]
+    ftl_files = [
+        f.name for f in selected_language_dir.iterdir() if f.is_file() and f.suffix == ".ftl"
+    ]
     if len(ftl_files) == 0:
         raise RuntimeError(f"No .ftl files found in the {selected_language_dir.name} directory.")
 

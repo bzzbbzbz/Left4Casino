@@ -1,10 +1,13 @@
-from aiogram import Router, F
-from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
-from bot.db import Database
 import uuid
 
+from aiogram import Router
+from aiogram.filters import Command, CommandObject
+from aiogram.types import Message
+
+from bot.db import Database
+
 router = Router()
+
 
 @router.message(Command("give"))
 async def cmd_give(message: Message, command: CommandObject, db: Database):
@@ -20,7 +23,7 @@ async def cmd_give(message: Message, command: CommandObject, db: Database):
     if not amount_str.isdigit():
         await message.answer("Сумма должна быть числом.")
         return
-    
+
     amount = int(amount_str)
     if amount <= 0:
         await message.answer("Сумма должна быть больше нуля.")
@@ -44,8 +47,8 @@ async def cmd_give(message: Message, command: CommandObject, db: Database):
                 await message.answer("Пользователь не найден.")
                 return
         else:
-             await message.answer("Укажите @username пользователя.")
-             return
+            await message.answer("Укажите @username пользователя.")
+            return
     else:
         await message.answer("Укажите получателя.")
         return
@@ -57,12 +60,13 @@ async def cmd_give(message: Message, command: CommandObject, db: Database):
     # Execute transfer
     event_id_out = str(uuid.uuid4())
     event_id_in = str(uuid.uuid4())
-    
-    success = await db.transfer_money(from_user_id, to_user_id, amount, event_id_out, event_id_in, chat_id=message.chat.id)
-    
+
+    success = await db.transfer_money(
+        from_user_id, to_user_id, amount, event_id_out, event_id_in, chat_id=message.chat.id
+    )
+
     if success:
         await message.answer(f"✅ Успешно передано {amount} монет пользователю {to_user_name}!")
         # Optionally notify recipient? They might not be in context if using username.
     else:
         await message.answer("❌ Недостаточно средств или ошибка транзакции.")
-

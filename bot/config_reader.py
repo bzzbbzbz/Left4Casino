@@ -2,9 +2,9 @@ from enum import StrEnum, auto
 from functools import lru_cache
 from os import getenv
 from tomllib import load
-from typing import Type, TypeVar
+from typing import TypeVar
 
-from pydantic import BaseModel, SecretStr, field_validator, RedisDsn
+from pydantic import BaseModel, RedisDsn, SecretStr, field_validator
 
 ConfigType = TypeVar("ConfigType", bound=BaseModel)
 
@@ -23,7 +23,7 @@ class BotConfig(BaseModel):
     token: SecretStr
     fsm_mode: FSMMode
 
-    @field_validator('fsm_mode', mode="before")
+    @field_validator("fsm_mode", mode="before")
     @classmethod
     def fsm_mode_to_lower(cls, v: str):
         return v.lower()
@@ -39,7 +39,7 @@ class LogConfig(BaseModel):
     renderer: LogRenderer
     allow_third_party_logs: bool
 
-    @field_validator('renderer', mode="before")
+    @field_validator("renderer", mode="before")
     @classmethod
     def log_renderer_to_lower(cls, v: str):
         return v.lower()
@@ -72,6 +72,7 @@ class AIConfig(BaseModel):
     model: str = "gpt-4o-mini"
     credit_cooldown_minutes: int = 60
 
+
 @lru_cache
 def parse_config_file() -> dict:
     # Проверяем наличие переменной окружения, которая переопределяет путь к конфигу
@@ -86,7 +87,7 @@ def parse_config_file() -> dict:
 
 
 @lru_cache
-def get_config(model: Type[ConfigType], root_key: str) -> ConfigType:
+def get_config(model: type[ConfigType], root_key: str) -> ConfigType:
     config_dict = parse_config_file()
     if root_key not in config_dict:
         error = f"Key {root_key} not found"

@@ -22,11 +22,11 @@ router = Router()
 @router.message(Command("spin"), flags=flags)
 @router.message(SpinTextFilter(), flags=flags)
 async def cmd_spin(
-        message: Message,
-        state: FSMContext,
-        l10n: FluentLocalization,
-        game_config: GameConfig,
-        db: Database,
+    message: Message,
+    state: FSMContext,
+    l10n: FluentLocalization,
+    game_config: GameConfig,
+    db: Database,
 ):
     user_id = message.from_user.id
     if message.from_user.username:
@@ -44,7 +44,9 @@ async def cmd_spin(
         return
 
     # Send dice to user
-    msg = await message.answer_dice(emoji=DiceEmoji.SLOT_MACHINE, reply_markup=get_spin_keyboard(l10n))
+    msg = await message.answer_dice(
+        emoji=DiceEmoji.SLOT_MACHINE, reply_markup=get_spin_keyboard(l10n)
+    )
 
     # Check whether user won or not
     score_change = get_score_change(msg.dice.value)
@@ -70,7 +72,7 @@ async def cmd_spin(
                 "combo_text": get_combo_text(msg.dice.value, l10n),
                 "dice_value": msg.dice.value,
                 "result_text": win_or_lose_text,
-                "score-value": new_score
-            }
+                "score-value": new_score,
+            },
         )
     )

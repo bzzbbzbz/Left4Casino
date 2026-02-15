@@ -1,8 +1,7 @@
 # Source: https://gist.github.com/MasterGroosha/963c0a82df348419788065ab229094ac
 
-from functools import lru_cache
-from typing import List, Tuple
 import random
+from functools import lru_cache
 
 from fluent.runtime import FluentLocalization
 
@@ -29,7 +28,7 @@ def get_score_change(dice_value: int) -> int:
         return -1
 
 
-def get_combo_parts(dice_value: int) -> List[str]:
+def get_combo_parts(dice_value: int) -> list[str]:
     """
     Returns exact icons from dice (bar, grapes, lemon, seven).
     Do not edit these values, since they are subject to be translated
@@ -67,7 +66,7 @@ def get_combo_text(dice_value: int, l10n: FluentLocalization) -> str:
     return ", ".join(parts)
 
 
-def get_super_jackpot() -> Tuple[int, str | None]:
+def get_super_jackpot() -> tuple[int, str | None]:
     """
     Calculates Super Jackpot multiplier.
     Returns (multiplier, jackpot_name).
@@ -81,12 +80,7 @@ def get_super_jackpot() -> Tuple[int, str | None]:
     # x2 (Mini): 65%, x3 (Major): 25%, x5 (Mega): 9%, x10 (Grand): 1%
     multipliers = [2, 3, 5, 10]
     weights = [65, 25, 9, 1]
-    names = {
-        2: "Mini",
-        3: "Major",
-        5: "Mega",
-        10: "Grand"
-    }
-    
+    names = {2: "Mini", 3: "Major", 5: "Mega", 10: "Grand"}
+
     multiplier = random.choices(multipliers, weights=weights, k=1)[0]
     return multiplier, names[multiplier]
