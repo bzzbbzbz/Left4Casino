@@ -274,10 +274,14 @@ class HeistService:
                 # Рассчитываем B для чата
                 b = await self.calculate_base_value(chat_id)
 
-                # Рассчитываем экономические параметры
+                # [START SPEC:HEIST-ECONOMY:pot_cap_and_seed]
+                # REQ: pot_cap = B * pot_cap_pct%; seed = B * random(seed_min_pct..seed_max_pct)%
+                # Source: HEIST_SPEC.md, секция "Экономика"
+                # CRITICAL: Множители влияют на длительность ивента и game balance
                 pot_cap = int(b * self.config.pot_cap_pct / 100)
                 seed_pct = random.randint(self.config.seed_min_pct, self.config.seed_max_pct)
                 seed_amount = int(b * seed_pct / 100)
+                # [END SPEC:HEIST-ECONOMY]
 
                 # Создаём состояние
                 state = HeistState(
@@ -396,6 +400,9 @@ class HeistService:
             "calculated_win": calculated_win,
         }
 
+    # [START SPEC:HEIST-PHASES:check_seed_needed]
+    # REQ: Через 5 мин после старта если pot = 0 — крупье вносит seed (fallback)
+    # Source: HEIST_SPEC.md, "Фаза 1"
     async def check_seed_needed(self, chat_id: int):
         """Проверяет, нужно ли добавить seed (через 5 мин после старта, если pot = 0)"""
         state = self.active_heists.get(chat_id)
@@ -420,6 +427,8 @@ class HeistService:
             await self.bot.send_message(chat_id, text)
         except Exception as e:
             logger.warning("Failed to send seed message", chat_id=chat_id, error=str(e))
+
+    # [END SPEC:HEIST-PHASES]
 
     async def start_alarm_phase(self, chat_id: int):
         """Запускает Фазу 2 для чата"""
@@ -456,6 +465,10 @@ class HeistService:
             phase2_end=state.phase2_end.strftime("%H:%M:%S"),
         )
 
+    # [START SPEC:HEIST-PHASES:check_phase1_end]
+    # REQ: По истечении Фазы 1: если pot < min_pot и не продлевали — +5 мин; иначе переход в Фазу 2
+    # Source: HEIST_SPEC.md, двухфазная система
+    # CRITICAL: Логика перехода и продления влияет на UX и длительность ивента
     async def check_phase1_end(self, chat_id: int):
         """Проверяет, не пора ли завершить Фазу 1"""
         state = self.active_heists.get(chat_id)
@@ -482,6 +495,8 @@ class HeistService:
             else:
                 # Переходим в Фазу 2
                 await self.start_alarm_phase(chat_id)
+
+    # [END SPEC:HEIST-PHASES]
 
     async def end_heist(self, chat_id: int):
         """Завершает ивент в чате, определяет победителя"""
@@ -521,12 +536,16 @@ class HeistService:
             logger.info("Heist ended with no winner", chat_id=chat_id)
             return
 
-        # Есть победитель
+        # [START SPEC:HEIST-ECONOMY:commission_and_payout]
+        # REQ: commission = pot * commission_pct%; payout = pot - commission (дефляция)
+        # Source: HEIST_SPEC.md, секция "Экономика", "Завершение"
+        # CRITICAL: Комиссия уничтожается из экономики; не менять без ревью баланса
         commission = int(state.pot * self.config.commission_pct / 100)
         payout = state.pot - commission
 
         # Выплачиваем победителю
         await self.db.update_balance(state.last_spinner_id, payout)
+        # [END SPEC:HEIST-ECONOMY]
 
         # Логируем выплату
         event_id = str(uuid.uuid4())

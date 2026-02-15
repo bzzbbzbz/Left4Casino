@@ -6,6 +6,10 @@ from functools import lru_cache
 from fluent.runtime import FluentLocalization
 
 
+# [START SPEC:DICE-BALANCE:get_score_change]
+# REQ: Map dice 1-64 to slot win/loss: three-of-a-kind +7, BAR BAR BAR +5, 777 +10, else -1
+# Source: dice_check.py, original implementation
+# CRITICAL: Changing these values affects game balance
 @lru_cache(maxsize=64)
 def get_score_change(dice_value: int) -> int:
     """
@@ -28,6 +32,13 @@ def get_score_change(dice_value: int) -> int:
         return -1
 
 
+# [END SPEC:DICE-BALANCE]
+
+
+# [START SPEC:DICE-BALANCE:get_combo_parts]
+# REQ: Map dice value 1-64 to three slot symbols (bar, grapes, lemon, seven)
+# Source: dice_check.py, original implementation
+# CRITICAL: Values are translation keys; mapping must stay consistent with get_score_change
 def get_combo_parts(dice_value: int) -> list[str]:
     """
     Returns exact icons from dice (bar, grapes, lemon, seven).
@@ -52,6 +63,9 @@ def get_combo_parts(dice_value: int) -> list[str]:
     return result
 
 
+# [END SPEC:DICE-BALANCE]
+
+
 @lru_cache(maxsize=64)
 def get_combo_text(dice_value: int, l10n: FluentLocalization) -> str:
     """
@@ -66,6 +80,10 @@ def get_combo_text(dice_value: int, l10n: FluentLocalization) -> str:
     return ", ".join(parts)
 
 
+# [START SPEC:DICE-BALANCE:get_super_jackpot]
+# REQ: 15% chance Super Jackpot; weights x2 65%, x3 25%, x5 9%, x10 1%
+# Source: AGENTS.md "Slots (🎰)" / game balance
+# CRITICAL: Weights and trigger chance affect economy
 def get_super_jackpot() -> tuple[int, str | None]:
     """
     Calculates Super Jackpot multiplier.
@@ -84,3 +102,6 @@ def get_super_jackpot() -> tuple[int, str | None]:
 
     multiplier = random.choices(multipliers, weights=weights, k=1)[0]
     return multiplier, names[multiplier]
+
+
+# [END SPEC:DICE-BALANCE]

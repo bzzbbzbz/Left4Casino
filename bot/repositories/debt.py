@@ -43,7 +43,10 @@ class DebtRepository(BaseRepository[Any]):
     ) -> None:
         """Add debt (or increase existing). Optionally net with reverse debt."""
         async with aiosqlite.connect(self.db_path) as db:
-            # Check reverse debt (creditor owes debtor)
+            # [START SPEC:DEBT-SETTLEMENT:MutualOffset]
+            # REQ: Если A должен B и B должен A — долги взаимно сокращаются (взаимозачёт)
+            # Source: DICE_FIGHT_SPEC.md, "Взаимозачёт долгов"
+            # CRITICAL: Логика net влияет на лимиты ставок и корректность долгов
             async with db.execute(
                 """SELECT debt_id, amount FROM player_debts
                    WHERE chat_id = ? AND debtor_id = ? AND creditor_id = ?""",
@@ -69,6 +72,7 @@ class DebtRepository(BaseRepository[Any]):
                     )
                     await db.commit()
                     return
+            # [END SPEC:DEBT-SETTLEMENT]
             # Existing debt (debtor owes creditor)?
             async with db.execute(
                 """SELECT debt_id, amount FROM player_debts

@@ -478,6 +478,10 @@ class Database:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
+    # [START SPEC:SAFE-ATOMIC:transfer_money]
+    # REQ: Атомарный перевод: balance -= amount у отправителя, balance += amount у получателя, event_history
+    # Source: AGENTS.md, transfer; bankruptcy при new_balance <= 0
+    # CRITICAL: ACID — не разрывать последовательность UPDATE/INSERT; при ошибке rollback
     async def transfer_money(
         self,
         from_user_id: int,
@@ -546,6 +550,8 @@ class Database:
                 # Let's add explicit rollback just in case.
                 await db.rollback()
                 return False
+
+    # [END SPEC:SAFE-ATOMIC]
 
     async def create_credit_session(self, session_id: str, user_id: int):
         async with aiosqlite.connect(self.db_path) as db:

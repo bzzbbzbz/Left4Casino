@@ -422,6 +422,10 @@ async def process_duel_result(
         )
 
     else:
+        # [START SPEC:DEBT-SETTLEMENT:duel_payout_and_debt]
+        # REQ: Проигравший платит до balance; остаток — долг (create_or_update_debt с взаимозачётом)
+        # Source: DICE_FIGHT_SPEC.md, "Долги", "Взаимозачёт"
+        # CRITICAL: Порядок: сначала перевод доступного, потом долг; долг через repo (взаимозачёт)
         loser_balance = await user_repo.get_balance(loser_id)
 
         if loser_balance >= bet:
@@ -439,6 +443,7 @@ async def process_duel_result(
             await debt_repo.create_or_update_debt(
                 loser_id, winner_id, debt_amount, chat_id, challenge_id
             )
+        # [END SPEC:DEBT-SETTLEMENT]
 
         # Build single-line result text with first_name (like bankruptcy)
         phrase = random.choice(FIGHT_WIN_PHRASES).format(

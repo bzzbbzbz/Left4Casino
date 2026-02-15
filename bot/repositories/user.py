@@ -163,6 +163,10 @@ class UserRepository(BaseRepository[User]):
             return 0
         return row["safe_balance"] if row["safe_balance"] is not None else 0
 
+    # [START SPEC:SAFE-ATOMIC:safe_deposit]
+    # REQ: Атомарно balance -= amount, safe_balance += amount (в одной транзакции)
+    # Source: SAFE_SPEC.md, сейф
+    # CRITICAL: Два UPDATE в одном контексте; не разрывать
     async def safe_deposit(
         self, user_id: int, amount: int, chat_id: int
     ) -> tuple[bool, int, int] | tuple[bool, str]:
@@ -190,6 +194,12 @@ class UserRepository(BaseRepository[User]):
             await db.commit()
         return (True, balance - amount, safe_balance + amount)
 
+    # [END SPEC:SAFE-ATOMIC]
+
+    # [START SPEC:SAFE-ATOMIC:safe_withdraw]
+    # REQ: Атомарно safe_balance -= amount, balance += amount (в одной транзакции)
+    # Source: SAFE_SPEC.md, сейф
+    # CRITICAL: Два UPDATE в одном контексте; не разрывать
     async def safe_withdraw(
         self, user_id: int, amount: int, chat_id: int
     ) -> tuple[bool, int, int] | tuple[bool, str]:
@@ -216,6 +226,8 @@ class UserRepository(BaseRepository[User]):
             )
             await db.commit()
         return (True, balance + amount, safe_balance - amount)
+
+    # [END SPEC:SAFE-ATOMIC]
 
 
 # [END SPEC:TASK-010:user-repository]
