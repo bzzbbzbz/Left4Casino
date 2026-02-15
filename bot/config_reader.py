@@ -73,6 +73,13 @@ class AIConfig(BaseModel):
     credit_cooldown_minutes: int = 60
 
 
+class DiceFightsConfig(BaseModel):
+    challenge_timeout_minutes: int = 5
+    roll_timeout_minutes: int = 5
+    max_debt: int = 100
+    min_bet: int = 1
+
+
 @lru_cache
 def parse_config_file() -> dict:
     # Проверяем наличие переменной окружения, которая переопределяет путь к конфигу

@@ -1,22 +1,22 @@
+# [START SPEC:TASK-010:safe-handler]
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from bot.db import Database
+from bot.repositories import RepositoryFactory
 from bot.utils.formatters import format_number
 
 router = Router()
 
 
 @router.message(Command("safe"))
-async def cmd_safe(message: Message, command: CommandObject, db: Database):
+async def cmd_safe(message: Message, command: CommandObject, repo_factory: RepositoryFactory):
     """
     Safe (protected account) command.
     /safe           - show safe balance
     /safe 50        - deposit 50 to safe
     /safe -50       - withdraw 50 from safe
     """
-    # Only works in group chats
     if message.chat.type == "private":
         await message.answer("❌ Эта команда работает только в групповых чатах.")
         return
@@ -24,13 +24,14 @@ async def cmd_safe(message: Message, command: CommandObject, db: Database):
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    # Get current balances
-    balance = await db.get_balance(user_id)
-    safe_balance = await db.get_safe_balance(user_id)
+    user_repo = repo_factory.create_user_repo()
+    challenge_repo = repo_factory.create_challenge_repo()
+
+    balance = await user_repo.get_balance(user_id)
+    safe_balance = await user_repo.get_safe_balance(user_id)
 
     args = command.args
 
-    # No arguments - show balance
     if not args:
         await message.answer(
             f"🔐 <b>В сейфе:</b> {format_number(safe_balance)} очков\n"
@@ -38,7 +39,6 @@ async def cmd_safe(message: Message, command: CommandObject, db: Database):
         )
         return
 
-    # Parse amount
     try:
         amount = int(args.strip())
     except ValueError:
@@ -49,14 +49,12 @@ async def cmd_safe(message: Message, command: CommandObject, db: Database):
         await message.answer("❌ Укажите сумму: /safe 50 (положить) или /safe -50 (снять)")
         return
 
-    # Deposit (positive amount)
     if amount > 0:
         if amount < 1:
             await message.answer("❌ Минимальная сумма: 1 очко")
             return
 
-        # Check for active duel
-        active_challenge = await db.get_active_challenge_by_user(user_id, chat_id)
+        active_challenge = await challenge_repo.get_active_challenge_by_user(user_id, chat_id)
         if active_challenge:
             await message.answer("❌ Нельзя класть в сейф во время активной дуэли или вызова.")
             return
@@ -70,9 +68,9 @@ async def cmd_safe(message: Message, command: CommandObject, db: Database):
             )
             return
 
-        result = await db.safe_deposit(user_id, amount, chat_id)
+        result = await user_repo.safe_deposit(user_id, amount, chat_id)
 
-        if result[0]:
+        if result[0] and len(result) == 3:
             new_balance, new_safe_balance = result[1], result[2]
             await message.answer(
                 f"✅ Положено в сейф: {format_number(amount)} очков\n\n"
@@ -82,7 +80,6 @@ async def cmd_safe(message: Message, command: CommandObject, db: Database):
         else:
             await message.answer(f"❌ Ошибка: {result[1]}")
 
-    # Withdraw (negative amount)
     else:
         withdraw_amount = abs(amount)
 
@@ -99,9 +96,9 @@ async def cmd_safe(message: Message, command: CommandObject, db: Database):
             )
             return
 
-        result = await db.safe_withdraw(user_id, withdraw_amount, chat_id)
+        result = await user_repo.safe_withdraw(user_id, withdraw_amount, chat_id)
 
-        if result[0]:
+        if result[0] and len(result) == 3:
             new_balance, new_safe_balance = result[1], result[2]
             await message.answer(
                 f"✅ Снято из сейфа: {format_number(withdraw_amount)} очков\n\n"
@@ -110,3 +107,6 @@ async def cmd_safe(message: Message, command: CommandObject, db: Database):
             )
         else:
             await message.answer(f"❌ Ошибка: {result[1]}")
+
+
+# [END SPEC:TASK-010:safe-handler]

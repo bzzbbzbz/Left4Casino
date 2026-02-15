@@ -58,3 +58,9 @@ provider = "mock"
 api_key = "dummy"
 model = "deepseek/deepseek-chat"
 credit_cooldown_minutes = 15
+
+[dice_fights]
+challenge_timeout_minutes = 5
+roll_timeout_minutes = 5
+max_debt = 100
+min_bet = 1

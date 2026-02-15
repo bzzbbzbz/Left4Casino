@@ -1,16 +1,17 @@
+# [START SPEC:TASK-010:transfer-handler]
 import uuid
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from bot.db import Database
+from bot.repositories import RepositoryFactory
 
 router = Router()
 
 
 @router.message(Command("give"))
-async def cmd_give(message: Message, command: CommandObject, db: Database):
+async def cmd_give(message: Message, command: CommandObject, repo_factory: RepositoryFactory):
     args = command.args
     if not args:
         await message.answer("Использование: /give <сумма> <@username> или ответом на сообщение")
@@ -33,13 +34,15 @@ async def cmd_give(message: Message, command: CommandObject, db: Database):
     to_user_id = None
     to_user_name = None
 
-    # Determine recipient
+    user_repo = repo_factory.create_user_repo()
+    event_repo = repo_factory.create_event_repo()
+
     if message.reply_to_message:
         to_user_id = message.reply_to_message.from_user.id
         to_user_name = message.reply_to_message.from_user.full_name
     elif target_username:
         if target_username.startswith("@"):
-            user = await db.get_user_by_nickname(target_username)
+            user = await user_repo.get_user_by_nickname(target_username)
             if user:
                 to_user_id = user["user_id"]
                 to_user_name = user["nickname"] or "Unknown"
@@ -57,16 +60,29 @@ async def cmd_give(message: Message, command: CommandObject, db: Database):
         await message.answer("Нельзя передать монеты самому себе.")
         return
 
-    # Execute transfer
+    sender_balance = await user_repo.get_balance(from_user_id, 0)
+    if sender_balance < amount:
+        await message.answer("❌ Недостаточно средств или ошибка транзакции.")
+        return
+
+    success = await user_repo.transfer(from_user_id, to_user_id, amount)
+    if not success:
+        await message.answer("❌ Недостаточно средств или ошибка транзакции.")
+        return
+
     event_id_out = str(uuid.uuid4())
     event_id_in = str(uuid.uuid4())
+    chat_id = message.chat.id
 
-    success = await db.transfer_money(
-        from_user_id, to_user_id, amount, event_id_out, event_id_in, chat_id=message.chat.id
-    )
+    await event_repo.add_event(event_id_out, from_user_id, "transfer_out", -amount, None, chat_id)
+    await event_repo.add_event(event_id_in, to_user_id, "transfer_in", amount, None, chat_id)
 
-    if success:
-        await message.answer(f"✅ Успешно передано {amount} монет пользователю {to_user_name}!")
-        # Optionally notify recipient? They might not be in context if using username.
-    else:
-        await message.answer("❌ Недостаточно средств или ошибка транзакции.")
+    new_balance = sender_balance - amount
+    if new_balance <= 0:
+        await event_repo.add_event(str(uuid.uuid4()), from_user_id, "bankruptcy", 0, None, chat_id)
+        await user_repo.increment_bankruptcy_count(from_user_id)
+
+    await message.answer(f"✅ Успешно передано {amount} монет пользователю {to_user_name}!")
+
+
+# [END SPEC:TASK-010:transfer-handler]

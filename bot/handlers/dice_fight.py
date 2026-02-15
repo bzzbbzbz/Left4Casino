@@ -14,7 +14,7 @@ from aiogram.filters import Command, CommandObject, Filter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.config_reader import DiceFightsConfig
-from bot.db import Database
+from bot.repositories import RepositoryFactory
 from bot.utils.formatters import format_number
 
 router = Router()
@@ -82,11 +82,14 @@ def get_challenge_keyboard(challenge_id: str, initiator_id: int) -> InlineKeyboa
 class ActiveDuelFilter(Filter):
     """Filter for dice rolls from duel participants"""
 
-    async def __call__(self, message: Message, db: Database) -> bool | dict:
+    async def __call__(self, message: Message, repo_factory: RepositoryFactory) -> bool | dict:
         if message.chat.type not in ("group", "supergroup"):
             return False
 
-        challenge = await db.get_accepted_challenge_for_user(message.from_user.id, message.chat.id)
+        challenge_repo = repo_factory.create_challenge_repo()
+        challenge = await challenge_repo.get_accepted_challenge_for_user(
+            message.from_user.id, message.chat.id
+        )
         if challenge:
             return {"active_challenge": challenge}
         return False
@@ -97,10 +100,12 @@ class ActiveDuelFilter(Filter):
 
 @router.message(Command("dice"))
 async def cmd_dice(
-    message: Message, command: CommandObject, db: Database, dice_fights_config: DiceFightsConfig
+    message: Message,
+    command: CommandObject,
+    repo_factory: RepositoryFactory,
+    dice_fights_config: DiceFightsConfig,
 ):
     """Create a new dice challenge"""
-    # Check group chat
     if message.chat.type not in ("group", "supergroup"):
         await message.reply("Драки работают только в групповых чатах!")
         return
@@ -108,13 +113,15 @@ async def cmd_dice(
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    # Register user if needed
-    if message.from_user.username:
-        await db.register_user(user_id, message.from_user.username)
+    user_repo = repo_factory.create_user_repo()
+    challenge_repo = repo_factory.create_challenge_repo()
+    debt_repo = repo_factory.create_debt_repo()
 
-    # Parse bet amount or use last bet
+    if message.from_user.username:
+        await user_repo.register_user(user_id, message.from_user.username)
+
     if not command.args:
-        last_bet = await db.get_last_dice_bet(user_id)
+        last_bet = await challenge_repo.get_last_dice_bet(user_id)
         if last_bet is None:
             await message.reply("Использование: /dice [ставка]\nПример: /dice 50")
             return
@@ -130,9 +137,8 @@ async def cmd_dice(
         await message.reply(f"Минимальная ставка: {dice_fights_config.min_bet}")
         return
 
-    # Get balance and current debt
-    balance = await db.get_balance(user_id, 50)
-    current_debt = await db.get_total_debt(user_id, chat_id)
+    balance = await user_repo.get_balance(user_id, 50)
+    current_debt = await debt_repo.get_total_debt(user_id, chat_id)
 
     # Check max bet: balance + (max_debt - current_debt)
     # Player can't exceed total debt of max_debt
@@ -159,14 +165,12 @@ async def cmd_dice(
         )
         return
 
-    # Check for existing active challenge
-    existing = await db.get_active_challenge_by_user(user_id, chat_id)
+    existing = await challenge_repo.get_active_challenge_by_user(user_id, chat_id)
     if existing:
         await message.reply("У вас уже есть активный вызов! Дождитесь его завершения или отмените.")
         return
 
-    # Save last bet
-    await db.set_last_dice_bet(user_id, bet)
+    await challenge_repo.set_last_dice_bet(user_id, bet)
 
     # Determine if going into debt
     going_debt = bet > balance
@@ -199,8 +203,7 @@ async def cmd_dice(
         challenge_text, reply_markup=get_challenge_keyboard(challenge_id, user_id)
     )
 
-    # Save challenge to DB
-    await db.create_dice_challenge(
+    await challenge_repo.create_dice_challenge(
         challenge_id=challenge_id,
         chat_id=chat_id,
         initiator_id=user_id,
@@ -213,25 +216,23 @@ async def cmd_dice(
 
 
 @router.callback_query(F.data.startswith("dice_cancel:"))
-async def on_dice_cancel(callback: CallbackQuery, db: Database):
+async def on_dice_cancel(callback: CallbackQuery, repo_factory: RepositoryFactory):
     """Cancel a dice challenge"""
     parts = callback.data.split(":")
     challenge_id = parts[1]
     initiator_id = int(parts[2])
 
-    # Only initiator can cancel
     if callback.from_user.id != initiator_id:
         await callback.answer("Только инициатор может отменить вызов!", show_alert=True)
         return
 
-    # Check challenge exists and is pending
-    challenge = await db.get_challenge(challenge_id)
+    challenge_repo = repo_factory.create_challenge_repo()
+    challenge = await challenge_repo.get_challenge(challenge_id)
     if not challenge or challenge["status"] != "pending":
         await callback.answer("Вызов уже не активен!", show_alert=True)
         return
 
-    # Cancel
-    await db.cancel_challenge(challenge_id)
+    await challenge_repo.cancel_challenge(challenge_id)
 
     # Update message
     nickname = challenge["initiator_nickname"] or "Игрок"
@@ -243,13 +244,18 @@ async def on_dice_cancel(callback: CallbackQuery, db: Database):
 
 @router.callback_query(F.data.startswith("dice_accept:"))
 async def on_dice_accept(
-    callback: CallbackQuery, db: Database, dice_fights_config: DiceFightsConfig
+    callback: CallbackQuery,
+    repo_factory: RepositoryFactory,
+    dice_fights_config: DiceFightsConfig,
 ):
     """Accept a dice challenge"""
     challenge_id = callback.data.split(":")[1]
 
-    # Get challenge
-    challenge = await db.get_challenge(challenge_id)
+    user_repo = repo_factory.create_user_repo()
+    challenge_repo = repo_factory.create_challenge_repo()
+    debt_repo = repo_factory.create_debt_repo()
+
+    challenge = await challenge_repo.get_challenge(challenge_id)
     if not challenge:
         await callback.answer("Вызов не найден!", show_alert=True)
         return
@@ -263,18 +269,15 @@ async def on_dice_accept(
     bet = challenge["bet_amount"]
     chat_id = challenge["chat_id"]
 
-    # Can't accept own challenge
     if opponent_id == initiator_id:
         await callback.answer("Нельзя драться с самим собой!", show_alert=True)
         return
 
-    # Register opponent if needed
     if callback.from_user.username:
-        await db.register_user(opponent_id, callback.from_user.username)
+        await user_repo.register_user(opponent_id, callback.from_user.username)
 
-    # Check opponent balance and current debt
-    opponent_balance = await db.get_balance(opponent_id, 50)
-    opponent_current_debt = await db.get_total_debt(opponent_id, chat_id)
+    opponent_balance = await user_repo.get_balance(opponent_id, 50)
+    opponent_current_debt = await debt_repo.get_total_debt(opponent_id, chat_id)
     max_debt = dice_fights_config.max_debt
     available_debt = max(0, max_debt - opponent_current_debt)
     max_affordable = max(0, opponent_balance) + available_debt
@@ -292,16 +295,14 @@ async def on_dice_accept(
             )
         return
 
-    # Check existing challenge for opponent
-    existing = await db.get_active_challenge_by_user(opponent_id, chat_id)
+    existing = await challenge_repo.get_active_challenge_by_user(opponent_id, chat_id)
     if existing and existing["challenge_id"] != challenge_id:
         await callback.answer("У вас уже есть активный вызов!", show_alert=True)
         return
 
-    # Accept challenge
     opponent_nickname = callback.from_user.username
     opponent_first_name = callback.from_user.first_name
-    success = await db.accept_challenge(
+    success = await challenge_repo.accept_challenge(
         challenge_id, opponent_id, opponent_nickname, opponent_first_name
     )
 
@@ -328,37 +329,47 @@ async def on_dice_accept(
 
 
 @router.message(F.dice.emoji == DiceEmoji.DICE, ActiveDuelFilter())
-async def on_dice_roll(message: Message, db: Database, active_challenge: dict, bot: Bot):
+async def on_dice_roll(
+    message: Message,
+    repo_factory: RepositoryFactory,
+    active_challenge: dict,
+    bot: Bot,
+):
     """Handle dice roll from duel participant"""
     user_id = message.from_user.id
     challenge_id = active_challenge["challenge_id"]
     roll_value = message.dice.value
 
-    # Check if user already rolled
     is_initiator = user_id == active_challenge["initiator_id"]
     already_rolled = (is_initiator and active_challenge["initiator_roll"] is not None) or (
         not is_initiator and active_challenge["opponent_roll"] is not None
     )
 
     if already_rolled:
-        return  # Silently ignore duplicate rolls
+        return
 
-    # Record the roll
-    await db.record_roll(challenge_id, user_id, roll_value)
+    challenge_repo = repo_factory.create_challenge_repo()
+    await challenge_repo.record_roll(challenge_id, user_id, roll_value)
 
-    # Get updated challenge
-    challenge = await db.get_challenge(challenge_id)
-
-    # Check if both rolled
+    challenge = await challenge_repo.get_challenge(challenge_id)
+    if challenge is None:
+        return
     if challenge["initiator_roll"] is not None and challenge["opponent_roll"] is not None:
-        await process_duel_result(db, bot, challenge, message.chat.id)
+        await process_duel_result(repo_factory, bot, challenge, message.chat.id)
 
 
 # ==================== RESULT PROCESSING ====================
 
 
-async def process_duel_result(db: Database, bot: Bot, challenge: dict, chat_id: int):
+async def process_duel_result(
+    repo_factory: RepositoryFactory, bot: Bot, challenge: dict, chat_id: int
+):
     """Process the result of a completed duel"""
+    user_repo = repo_factory.create_user_repo()
+    event_repo = repo_factory.create_event_repo()
+    challenge_repo = repo_factory.create_challenge_repo()
+    debt_repo = repo_factory.create_debt_repo()
+
     initiator_id = challenge["initiator_id"]
     opponent_id = challenge["opponent_id"]
     initiator_roll = challenge["initiator_roll"]
@@ -366,7 +377,6 @@ async def process_duel_result(db: Database, bot: Bot, challenge: dict, chat_id: 
     bet = challenge["bet_amount"]
     challenge_id = challenge["challenge_id"]
 
-    # Use first_name for display (like bankruptcy messages)
     initiator_name = (
         challenge.get("initiator_first_name") or challenge["initiator_nickname"] or "Игрок1"
     )
@@ -374,7 +384,6 @@ async def process_duel_result(db: Database, bot: Bot, challenge: dict, chat_id: 
         challenge.get("opponent_first_name") or challenge["opponent_nickname"] or "Игрок2"
     )
 
-    # Determine winner
     if initiator_roll > opponent_roll:
         winner_id = initiator_id
         loser_id = opponent_id
@@ -390,18 +399,14 @@ async def process_duel_result(db: Database, bot: Bot, challenge: dict, chat_id: 
         winner_roll = opponent_roll
         loser_roll = initiator_roll
     else:
-        # Draw
         winner_id = None
 
-    # Complete challenge in DB
-    await db.complete_challenge(challenge_id, winner_id)
+    await challenge_repo.complete_challenge(challenge_id, winner_id)
 
     if winner_id is None:
-        # Draw - no money changes, single line message
         phrase = random.choice(FIGHT_DRAW_PHRASES).format(roll=initiator_roll)
         result_text = phrase
 
-        # Log draw events
         metadata = json.dumps(
             {
                 "challenge_id": challenge_id,
@@ -409,35 +414,31 @@ async def process_duel_result(db: Database, bot: Bot, challenge: dict, chat_id: 
                 "rolls": [initiator_roll, opponent_roll],
             }
         )
-        await db.add_event(
+        await event_repo.add_event(
             str(uuid.uuid4()), initiator_id, "dice_challenge_draw", 0, metadata, chat_id
         )
-        await db.add_event(
+        await event_repo.add_event(
             str(uuid.uuid4()), opponent_id, "dice_challenge_draw", 0, metadata, chat_id
         )
 
     else:
-        # Winner determined - process money
-        loser_balance = await db.get_balance(loser_id)
+        loser_balance = await user_repo.get_balance(loser_id)
 
-        # Calculate actual transfer and debt
         if loser_balance >= bet:
-            # Loser can pay full amount
             actual_transfer = bet
             debt_amount = 0
         else:
-            # Loser goes into debt
             actual_transfer = max(0, loser_balance)
             debt_amount = bet - actual_transfer
 
-        # Update balances
         if actual_transfer > 0:
-            await db.update_balance(loser_id, -actual_transfer)
-            await db.update_balance(winner_id, actual_transfer)
+            await user_repo.update_balance(loser_id, -actual_transfer)
+            await user_repo.update_balance(winner_id, actual_transfer)
 
-        # Create debt if needed
         if debt_amount > 0:
-            await db.create_or_update_debt(loser_id, winner_id, debt_amount, chat_id, challenge_id)
+            await debt_repo.create_or_update_debt(
+                loser_id, winner_id, debt_amount, chat_id, challenge_id
+            )
 
         # Build single-line result text with first_name (like bankruptcy)
         phrase = random.choice(FIGHT_WIN_PHRASES).format(
@@ -460,7 +461,7 @@ async def process_duel_result(db: Database, bot: Bot, challenge: dict, chat_id: 
                 "debt": debt_amount,
             }
         )
-        await db.add_event(
+        await event_repo.add_event(
             str(uuid.uuid4()), winner_id, "dice_challenge_win", actual_transfer, metadata, chat_id
         )
 
@@ -472,7 +473,7 @@ async def process_duel_result(db: Database, bot: Bot, challenge: dict, chat_id: 
                 "debt": debt_amount,
             }
         )
-        await db.add_event(
+        await event_repo.add_event(
             str(uuid.uuid4()), loser_id, "dice_challenge_loss", -actual_transfer, metadata, chat_id
         )
 
@@ -483,14 +484,15 @@ async def process_duel_result(db: Database, bot: Bot, challenge: dict, chat_id: 
 # ==================== AUTO-ROLL TIMEOUT ====================
 
 
-async def auto_roll_for_timeout(db: Database, bot: Bot, challenge: dict):
+async def auto_roll_for_timeout(repo_factory: RepositoryFactory, bot: Bot, challenge: dict):
     """Handle timeout - auto-roll for players who didn't roll"""
+    challenge_repo = repo_factory.create_challenge_repo()
+
     challenge_id = challenge["challenge_id"]
     chat_id = challenge["chat_id"]
 
     initiator_id = challenge["initiator_id"]
     opponent_id = challenge["opponent_id"]
-    # Use first_name for display
     initiator_name = (
         challenge.get("initiator_first_name") or challenge["initiator_nickname"] or "Игрок1"
     )
@@ -500,36 +502,33 @@ async def auto_roll_for_timeout(db: Database, bot: Bot, challenge: dict):
 
     messages = []
 
-    # Auto-roll for initiator if needed
     if challenge["initiator_roll"] is None:
         roll = random.randint(1, 6)
-        await db.record_roll(challenge_id, initiator_id, roll)
+        await challenge_repo.record_roll(challenge_id, initiator_id, roll)
         messages.append(
             f"⏰ {html.escape(str(initiator_name))} не успел бросить кубик! Бот бросает за него: 🎲 <b>{roll}</b>"
         )
 
-    # Auto-roll for opponent if needed
     if challenge["opponent_roll"] is None:
         roll = random.randint(1, 6)
-        await db.record_roll(challenge_id, opponent_id, roll)
+        await challenge_repo.record_roll(challenge_id, opponent_id, roll)
         messages.append(
             f"⏰ {html.escape(str(opponent_name))} не успел бросить кубик! Бот бросает за него: 🎲 <b>{roll}</b>"
         )
 
-    # Send timeout messages
     if messages:
         await bot.send_message(chat_id, "\n".join(messages))
 
-    # Get updated challenge and process result
-    updated_challenge = await db.get_challenge(challenge_id)
-    await process_duel_result(db, bot, updated_challenge, chat_id)
+    updated_challenge = await challenge_repo.get_challenge(challenge_id)
+    if updated_challenge is not None:
+        await process_duel_result(repo_factory, bot, updated_challenge, chat_id)
 
 
 # ==================== /TAKE COMMAND ====================
 
 
 @router.message(Command("take"))
-async def cmd_take(message: Message, command: CommandObject, db: Database):
+async def cmd_take(message: Message, command: CommandObject, repo_factory: RepositoryFactory):
     """Collect debt from a player"""
     if message.chat.type not in ("group", "supergroup"):
         await message.reply("Команда работает только в групповых чатах!")
@@ -541,7 +540,6 @@ async def cmd_take(message: Message, command: CommandObject, db: Database):
 
     parts = command.args.split()
 
-    # Parse amount
     try:
         amount = int(parts[0])
     except ValueError:
@@ -557,7 +555,9 @@ async def cmd_take(message: Message, command: CommandObject, db: Database):
     debtor_id = None
     debtor_nickname = None
 
-    # Find debtor - by reply or by username
+    user_repo = repo_factory.create_user_repo()
+    debt_repo = repo_factory.create_debt_repo()
+
     if message.reply_to_message:
         debtor_id = message.reply_to_message.from_user.id
         debtor_nickname = (
@@ -567,7 +567,7 @@ async def cmd_take(message: Message, command: CommandObject, db: Database):
     elif len(parts) > 1:
         username = parts[1]
         if username.startswith("@"):
-            user = await db.get_user_by_nickname(username)
+            user = await user_repo.get_user_by_nickname(username)
             if user:
                 debtor_id = user["user_id"]
                 debtor_nickname = user["nickname"]
@@ -585,23 +585,20 @@ async def cmd_take(message: Message, command: CommandObject, db: Database):
         await message.reply("Нельзя взыскать долг с самого себя!")
         return
 
-    # Check debt exists
-    debt = await db.get_debt(chat_id, debtor_id, creditor_id)
+    debt = await debt_repo.get_debt(chat_id, debtor_id, creditor_id)
     if not debt or debt["amount"] <= 0:
         await message.reply("Этот игрок тебе ничего не должен!")
         return
 
-    # Check amount
     if amount > debt["amount"]:
         await message.reply(
             f"Долг составляет только {format_number(debt['amount'])} очков. Нельзя забрать больше!"
         )
         return
 
-    # Try to collect
-    result = await db.collect_debt(creditor_id, debtor_id, amount, chat_id)
+    result = await debt_repo.collect_debt(creditor_id, debtor_id, amount, chat_id)
 
-    if result[0]:  # Success
+    if result[0] and len(result) == 3:
         actual_amount = result[1]
         remaining_debt = result[2]
 
@@ -615,15 +612,15 @@ async def cmd_take(message: Message, command: CommandObject, db: Database):
         else:
             debt_status = "\n✅ Долг полностью погашен!"
 
-        creditor_balance = await db.get_balance(creditor_id)
+        creditor_balance = await user_repo.get_balance(creditor_id)
 
         await message.reply(
             f"{phrase}{debt_status}\n💰 Твой баланс: {format_number(creditor_balance)}"
         )
     else:
-        error_msg = result[1]
+        error_msg = str(result[1])
         if "нет средств" in error_msg.lower():
-            debtor_balance = await db.get_balance(debtor_id)
+            debtor_balance = await user_repo.get_balance(debtor_id)
             await message.reply(
                 f"У @{html.escape(str(debtor_nickname))} баланс {format_number(debtor_balance)}. Ждите, пока заработает!"
             )

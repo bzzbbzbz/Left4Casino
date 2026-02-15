@@ -121,6 +121,57 @@ class Database:
                 await db.execute("ALTER TABLE event_history ADD COLUMN chat_id INTEGER")
             except Exception:
                 pass
+            # Safe balance and last_dice_bet (for repositories)
+            try:
+                await db.execute("ALTER TABLE users ADD COLUMN safe_balance INTEGER DEFAULT 0")
+            except Exception:
+                pass
+            try:
+                await db.execute("ALTER TABLE users ADD COLUMN last_dice_bet INTEGER")
+            except Exception:
+                pass
+
+            # dice_challenges (PvP duels)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS dice_challenges (
+                    challenge_id TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    initiator_id INTEGER NOT NULL,
+                    initiator_nickname TEXT,
+                    initiator_first_name TEXT,
+                    opponent_id INTEGER,
+                    opponent_nickname TEXT,
+                    opponent_first_name TEXT,
+                    bet_amount INTEGER NOT NULL,
+                    initiator_going_debt INTEGER DEFAULT 0,
+                    status TEXT DEFAULT 'pending',
+                    initiator_roll INTEGER,
+                    opponent_roll INTEGER,
+                    winner_id INTEGER,
+                    message_id INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    accepted_at DATETIME,
+                    completed_at DATETIME,
+                    FOREIGN KEY(initiator_id) REFERENCES users(user_id),
+                    FOREIGN KEY(opponent_id) REFERENCES users(user_id)
+                )
+            """)
+            # player_debts
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS player_debts (
+                    debt_id TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    debtor_id INTEGER NOT NULL,
+                    creditor_id INTEGER NOT NULL,
+                    amount INTEGER NOT NULL,
+                    challenge_id TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(chat_id, debtor_id, creditor_id),
+                    FOREIGN KEY(debtor_id) REFERENCES users(user_id),
+                    FOREIGN KEY(creditor_id) REFERENCES users(user_id)
+                )
+            """)
 
             await db.commit()
 

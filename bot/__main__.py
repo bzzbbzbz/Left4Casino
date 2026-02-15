@@ -14,6 +14,7 @@ from bot.config_reader import (
     AIConfig,
     BotConfig,
     ChatRestrictionsConfig,
+    DiceFightsConfig,
     FSMMode,
     GameConfig,
     LogConfig,
@@ -23,12 +24,13 @@ from bot.config_reader import (
 )
 from bot.db import Database
 from bot.fluent_loader import get_fluent_localization
-from bot.handlers import ai_credit, default_commands, group_games, spin, transfer
+from bot.handlers import ai_credit, default_commands, dice_fight, group_games, safe, spin, transfer
 from bot.logs import get_structlog_config
 from bot.middlewares.logging import LoggingMiddleware
 from bot.middlewares.restrictions import ChatRestrictionMiddleware
 from bot.middlewares.throttling import ThrottlingMiddleware
 from bot.middlewares.tracker import GroupTrackerMiddleware
+from bot.repositories import RepositoryFactory
 from bot.services.ai import AIClient
 from bot.services.backfill import backfill_usernames
 from bot.services.daily_stats import DailyStatsService
@@ -75,8 +77,11 @@ async def main():
     )
     ai_config = get_config(model=AIConfig, root_key="ai")
     reports_config = get_config(model=ReportsConfig, root_key="reports")
+    dice_fights_config = get_config(model=DiceFightsConfig, root_key="dice_fights")
 
     ai_client = AIClient(ai_config)
+
+    repo_factory = RepositoryFactory(db.db_path)
 
     # Creating dispatcher with some dependencies
     dp = Dispatcher(
@@ -84,8 +89,10 @@ async def main():
         l10n=l10n,
         game_config=game_config,
         db=db,
+        repo_factory=repo_factory,
         ai_client=ai_client,
         ai_config=ai_config,
+        dice_fights_config=dice_fights_config,
     )
 
     # Register middleware
@@ -101,6 +108,8 @@ async def main():
     dp.include_router(spin.router)
     dp.include_router(group_games.router)
     dp.include_router(transfer.router)
+    dp.include_router(safe.router)
+    dp.include_router(dice_fight.router)
     dp.include_router(ai_credit.router)
 
     # Register throttling middleware
