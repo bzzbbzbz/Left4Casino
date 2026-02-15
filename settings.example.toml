@@ -39,6 +39,8 @@ send_gameover_sticker = true
 throttle_time_spin = 2
 # Throttling time for all other actions.
 throttle_time_other = 1
+# Throttling time for /top (leaderboard) in seconds.
+throttle_time_top = 5
 
 [chat_restrictions]
 # If true, the bot will ignore messages in private chats (DM)
@@ -64,3 +66,33 @@ challenge_timeout_minutes = 5
 roll_timeout_minutes = 5
 max_debt = 100
 min_bet = 1
+
+[heist]
+# Enable/disable heist event
+enabled = true
+# Number of heist events per day
+events_per_day = 1
+# Heist only happens during active hours (never at night)
+active_hours_start = "08:00"
+active_hours_end = "02:00"
+
+# Economy (% of B - yesterday's total winnings in chat)
+pot_cap_pct = 7               # max pot = B × % (досрочная Фаза 2)
+min_pot_pct = 1.5               # min pot for completion without extension
+seed_min_pct = 0.5            # min seed from croupier = B × 0.5%
+seed_max_pct = 2            # max seed from croupier = B × 2%
+commission_pct = 15           # croupier commission (destroyed from economy)
+base_value_noise_pct = 15     # ±15% noise to B (masking)
+base_value_fallback = 1000    # B if no data from yesterday
+
+# Timings
+warning_before_minutes = 10   # warning N minutes before start
+phase1_min_minutes = 10       # min duration of Phase 1
+phase1_max_minutes = 25       # max duration of Phase 1
+phase2_min_minutes = 2        # min duration of Phase 2
+phase2_max_minutes = 5        # max duration of Phase 2
+seed_delay_minutes = 0.1        # after how many minutes croupier adds seed
+max_duration_minutes = 30     # absolute hard cap
+
+# Croupier messages
+croupier_message_interval_seconds = 120  # interval between messages

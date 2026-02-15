@@ -14,6 +14,7 @@ from bot.config_reader import GameConfig
 from bot.db import Database
 from bot.dice_check import get_score_change, get_super_jackpot
 from bot.models.events import create_event
+from bot.utils.formatters import format_number
 
 router = Router()
 
@@ -37,7 +38,7 @@ async def cmd_balance(message: Message, db: Database, game_config: GameConfig):
 
     # Получаем баланс (или начальный, если пользователя нет)
     balance = await db.get_balance(user_id, game_config.starting_points)
-    await message.reply(f"Ваш баланс: {balance}")
+    await message.reply(f"Ваш баланс: {format_number(balance)}")
 
 
 # Обработчик команды /stats
@@ -69,13 +70,13 @@ async def cmd_stats(message: Message, db: Database):
         # Add stats to display if they exist (games > 0)
         if games > 0:
             stats_part = (
-                f"\n      🎰 Всего игр: {games}"
-                f"\n      📈 Выиграно очков: {won} | Потрачено: {lost} | WR: {winrate}%"
-                f"\n      💀 Банкротств: {bk}"
+                f"\n      🎰 Всего игр: {format_number(games)}"
+                f"\n      📈 Выиграно очков: {format_number(won)} | Потрачено: {format_number(lost)} | WR: {winrate}%"
+                f"\n      💀 Банкротств: {format_number(bk)}"
             )
-            text.append(f"{idx}. <b>{safe_nickname}</b> — {balance} очков{stats_part}\n")
+            text.append(f"{idx}. <b>{safe_nickname}</b> — {format_number(balance)} очков{stats_part}\n")
         else:
-            text.append(f"{idx}. <b>{safe_nickname}</b> — {balance} очков\n")
+            text.append(f"{idx}. <b>{safe_nickname}</b> — {format_number(balance)} очков\n")
 
     await message.reply("\n".join(text))
 
@@ -116,7 +117,7 @@ async def on_dice_roll(message: Message, db: Database, game_config: GameConfig):
     # Проверяем, хватает ли денег на ставку
     if current_balance < user_bid:
         await message.reply(
-            f"Ваш баланс ({current_balance}) меньше текущей ставки ({user_bid}). Снизьте ставку командой /bid или пополните баланс."
+            f"Ваш баланс ({format_number(current_balance)}) меньше текущей ставки ({format_number(user_bid)}). Снизьте ставку командой /bid или пополните баланс."
         )
         return
 
@@ -181,13 +182,13 @@ async def on_dice_roll(message: Message, db: Database, game_config: GameConfig):
             msg_text = (
                 f"{header}\n"
                 f"Сработал множитель <b>x{super_multiplier}</b> ({jackpot_name})!\n\n"
-                f"💰 Ваша ставка: {user_bid}\n"
-                f"💸 Выигрыш: <b>{actual_change}</b> очков! (вместо {score_change * user_bid})\n"
-                f"🏦 Ваш баланс: {new_balance}"
+                f"💰 Ваша ставка: {format_number(user_bid)}\n"
+                f"💸 Выигрыш: <b>{format_number(actual_change)}</b> очков! (вместо {format_number(score_change * user_bid)})\n"
+                f"🏦 Ваш баланс: {format_number(new_balance)}"
             )
             await message.reply(msg_text)
         else:
-            await message.reply(f"Вы выиграли {actual_change} очков! Ваш баланс: {new_balance}")
+            await message.reply(f"Вы выиграли {format_number(actual_change)} очков! Ваш баланс: {format_number(new_balance)}")
 
     # 2. Банкрот (баланс стал <= 0, но был > 0)
     elif new_balance <= 0:

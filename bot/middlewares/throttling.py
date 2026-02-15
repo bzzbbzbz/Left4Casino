@@ -8,10 +8,16 @@ from cachetools import TTLCache
 
 
 class ThrottlingMiddleware(BaseMiddleware):
-    def __init__(self, throttle_time_spin: int, throttle_time_other: int):
+    def __init__(
+        self,
+        throttle_time_spin: int,
+        throttle_time_other: int,
+        throttle_time_top: int = 5,
+    ):
         self.caches = {
             "spin": TTLCache(maxsize=10_000, ttl=throttle_time_spin),
             "default": TTLCache(maxsize=10_000, ttl=throttle_time_other),
+            "top": TTLCache(maxsize=10_000, ttl=throttle_time_top),
         }
 
     async def __call__(

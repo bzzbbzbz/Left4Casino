@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pytz
 from aiogram import Bot
 from bot.db import Database
+from bot.utils.formatters import format_number
 
 
 class DailyStatsService:
@@ -169,11 +170,11 @@ class DailyStatsService:
 
         # Build message
         lines = [f"<b>🏆 Итоги дня ({date_str})</b>\n"]
-        lines.append(f"📊 Всего игр: {total_games}")
-        lines.append(f"📈 Получено очков: {total_won_global}")
-        lines.append(f"📉 Потрачено очков: {total_lost_global}")
+        lines.append(f"📊 Всего игр: {format_number(total_games)}")
+        lines.append(f"📈 Получено очков: {format_number(total_won_global)}")
+        lines.append(f"📉 Потрачено очков: {format_number(total_lost_global)}")
         if total_bankruptcies > 0:
-            lines.append(f"💀 Всего банкротств: {total_bankruptcies}")
+            lines.append(f"💀 Всего банкротств: {format_number(total_bankruptcies)}")
         lines.append("")
 
         default_reward = 50
@@ -211,8 +212,10 @@ class DailyStatsService:
                         )
                         rewarded_users.add(uid)
 
+                val = cat_data["max_val"]
+                val_str = str(val) if isinstance(val, float) and not val.is_integer() else format_number(int(val))
                 lines.append(
-                    f"{cat_data['label']} — {', '.join(names)} ({cat_data['max_val']}) +{reward_val} очков!"
+                    f"{cat_data['label']} — {', '.join(names)} ({val_str}) +{reward_val} очков!"
                 )
 
         if is_dry_run:

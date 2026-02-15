@@ -7,6 +7,7 @@ from fluent.runtime import FluentLocalization
 from bot.config_reader import GameConfig
 from bot.db import Database
 from bot.keyboards import get_spin_keyboard
+from bot.utils.formatters import format_number
 
 flags = {"throttling_key": "default"}
 router = Router()
@@ -51,7 +52,7 @@ async def cmd_bid(message: Message, command: CommandObject, db: Database, game_c
     user_id = message.from_user.id
     if not command.args:
         current_bid = await db.get_bid(user_id)
-        await message.reply(f"Ваша текущая ставка: {current_bid}")
+        await message.reply(f"Ваша текущая ставка: {format_number(current_bid)}")
         return
 
     try:
@@ -65,11 +66,11 @@ async def cmd_bid(message: Message, command: CommandObject, db: Database, game_c
             # Если ставка больше баланса, идем ва-банк
             await db.update_bid(user_id, current_balance)
             await message.reply(
-                f"Недостаточно средств для ставки {bid_amount}. Вы пошли ва-банк! Ставка установлена в размере: {current_balance}"
+                f"Недостаточно средств для ставки {format_number(bid_amount)}. Вы пошли ва-банк! Ставка установлена в размере: {format_number(current_balance)}"
             )
             return
 
         await db.update_bid(user_id, bid_amount)
-        await message.reply(f"Ваша ставка обновлена: {bid_amount}")
+        await message.reply(f"Ваша ставка обновлена: {format_number(bid_amount)}")
     except ValueError:
         await message.reply("Пожалуйста, укажите целое число.")

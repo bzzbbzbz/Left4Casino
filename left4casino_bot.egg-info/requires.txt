@@ -1,4 +1,6 @@
 aiogram<4.0.0,>=3.18.0
+pydantic<3.0.0,>=2.0.0
+pydantic-settings<3.0.0,>=2.0.0
 aiosqlite<1.0.0,>=0.19.0
 apscheduler<4.0.0,>=3.10.4
 async-timeout<6.0.0,>=5.0.1
@@ -15,3 +17,4 @@ pyright<2.0.0,>=1.1.350
 pytest<9.0.0,>=8.0.0
 pytest-asyncio<1.0.0,>=0.23.0
 ruff<1.0.0,>=0.3.0
+pre-commit>=3.6.0

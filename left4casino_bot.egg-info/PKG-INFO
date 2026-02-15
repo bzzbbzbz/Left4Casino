@@ -5,6 +5,8 @@ Summary: Telegram casino bot with AI banker
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
 Requires-Dist: aiogram<4.0.0,>=3.18.0
+Requires-Dist: pydantic<3.0.0,>=2.0.0
+Requires-Dist: pydantic-settings<3.0.0,>=2.0.0
 Requires-Dist: aiosqlite<1.0.0,>=0.19.0
 Requires-Dist: apscheduler<4.0.0,>=3.10.4
 Requires-Dist: async-timeout<6.0.0,>=5.0.1
@@ -20,6 +22,7 @@ Requires-Dist: pyright<2.0.0,>=1.1.350; extra == "dev"
 Requires-Dist: pytest<9.0.0,>=8.0.0; extra == "dev"
 Requires-Dist: pytest-asyncio<1.0.0,>=0.23.0; extra == "dev"
 Requires-Dist: ruff<1.0.0,>=0.3.0; extra == "dev"
+Requires-Dist: pre-commit>=3.6.0; extra == "dev"
 
 [<img src="https://img.shields.io/badge/Telegram-%40Left4CasinoBot-blue">](https://t.me/Left4CasinoBot)
 

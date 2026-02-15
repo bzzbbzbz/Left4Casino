@@ -24,6 +24,10 @@ telegram-casino-bot/bot/middlewares/logging.py
 telegram-casino-bot/bot/middlewares/restrictions.py
 telegram-casino-bot/bot/middlewares/throttling.py
 telegram-casino-bot/bot/middlewares/tracker.py
+telegram-casino-bot/bot/models/__init__.py
+telegram-casino-bot/bot/models/config.py
+telegram-casino-bot/bot/models/entities.py
+telegram-casino-bot/bot/models/events.py
 telegram-casino-bot/bot/services/ai.py
 telegram-casino-bot/bot/services/backfill.py
 telegram-casino-bot/bot/services/daily_stats.py

@@ -4,7 +4,7 @@ from os import getenv
 from tomllib import load
 from typing import TypeVar
 
-from pydantic import BaseModel, RedisDsn, SecretStr, field_validator
+from pydantic import BaseModel, Field, RedisDsn, SecretStr, field_validator
 
 ConfigType = TypeVar("ConfigType", bound=BaseModel)
 
@@ -50,10 +50,13 @@ class RedisConfig(BaseModel):
 
 
 class GameConfig(BaseModel):
-    starting_points: int
-    send_gameover_sticker: bool
-    throttle_time_spin: int
-    throttle_time_other: int
+    """Game configuration from [game_config]. All fields have defaults for robust startup."""
+
+    starting_points: int = Field(default=50, ge=0)
+    send_gameover_sticker: bool = True
+    throttle_time_spin: int = Field(default=2, ge=0, le=60)
+    throttle_time_other: int = Field(default=1, ge=0, le=60)
+    throttle_time_top: int = Field(default=5, ge=0, le=60)
 
 
 class ChatRestrictionsConfig(BaseModel):
@@ -80,6 +83,42 @@ class DiceFightsConfig(BaseModel):
     min_bet: int = 1
 
 
+class HappyMomentTierConfig(BaseModel):
+    duration_minutes: int
+    multiplier: float
+
+
+class HappyMomentConfig(BaseModel):
+    enabled: bool = True
+    events_per_day: int = 2
+    active_hours_weight: int = 90
+    active_hours_start: str = "08:00"
+    active_hours_end: str = "02:00"
+    tiers: list[HappyMomentTierConfig] = []
+
+
+class HeistConfig(BaseModel):
+    enabled: bool = True
+    events_per_day: int = 1
+    active_hours_start: str = "08:00"
+    active_hours_end: str = "02:00"
+    pot_cap_pct: float = 7.0
+    min_pot_pct: float = 1.5
+    seed_min_pct: float = 0.5
+    seed_max_pct: float = 2.0
+    commission_pct: int = 15
+    base_value_noise_pct: float = 15.0
+    base_value_fallback: int = 1000
+    warning_before_minutes: int = 10
+    phase1_min_minutes: int = 10
+    phase1_max_minutes: int = 25
+    phase2_min_minutes: int = 2
+    phase2_max_minutes: int = 5
+    seed_delay_minutes: float = 0.1
+    max_duration_minutes: int = 30
+    croupier_message_interval_seconds: int = 120
+
+
 @lru_cache
 def parse_config_file() -> dict:
     # Проверяем наличие переменной окружения, которая переопределяет путь к конфигу
@@ -94,9 +133,13 @@ def parse_config_file() -> dict:
 
 
 @lru_cache
-def get_config(model: type[ConfigType], root_key: str) -> ConfigType:
+def get_config(
+    model: type[ConfigType], root_key: str, required: bool = True
+) -> ConfigType:
     config_dict = parse_config_file()
     if root_key not in config_dict:
-        error = f"Key {root_key} not found"
-        raise ValueError(error)
+        if required:
+            error = f"Key {root_key} not found"
+            raise ValueError(error)
+        return model.model_validate({})
     return model.model_validate(config_dict[root_key])
