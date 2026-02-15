@@ -1,7 +1,10 @@
+import json
 from pathlib import Path
 
 import aiosqlite
 
+from bot.models.entities import User
+from bot.models.events import GameEvent
 from bot.utils.context import add_db_action
 
 
@@ -320,12 +323,29 @@ class Database:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
-    async def get_user(self, user_id: int):
+    async def get_user(self, user_id: int) -> User | None:
+        """Get user from DB; returns Pydantic User model or None."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cursor:
                 row = await cursor.fetchone()
-                return dict(row) if row else None
+                if row is None:
+                    return None
+                d = dict(row)
+                # Normalize for User model (missing columns get defaults)
+                return User(
+                    user_id=d["user_id"],
+                    nickname=d.get("nickname"),
+                    balance=d.get("balance", 50),
+                    bid=d.get("bid", 1),
+                    state=d.get("state", "IDLE"),
+                    created_at=d.get("created_at"),
+                    games_played=d.get("games_played", 0),
+                    total_won=d.get("total_won", 0),
+                    total_lost=d.get("total_lost", 0),
+                    bankruptcy_count=d.get("bankruptcy_count", 0),
+                    safe_balance=d.get("safe_balance", 0),
+                )
 
     async def register_user(self, user_id: int, nickname: str):
         async with aiosqlite.connect(self.db_path) as db:
@@ -384,6 +404,18 @@ class Database:
             add_db_action(
                 f"Added event {event_id} for user {user_id}: {event_type}, amount={amount}, chat={chat_id}"
             )
+
+    async def add_event_from_model(self, event: GameEvent) -> None:
+        """Add event to history from a Pydantic GameEvent model."""
+        metadata_str = json.dumps(event.metadata) if event.metadata else None
+        await self.add_event(
+            event_id=event.event_id,
+            user_id=event.user_id,
+            event_type=event.event_type,
+            amount=event.amount,
+            metadata=metadata_str,
+            chat_id=event.chat_id,
+        )
 
     async def get_last_credit_event(self, user_id: int):
         async with aiosqlite.connect(self.db_path) as db:

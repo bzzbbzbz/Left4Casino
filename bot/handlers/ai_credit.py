@@ -17,7 +17,7 @@ logger = structlog.get_logger()
 class InDialogueFilter(Filter):
     async def __call__(self, message: Message, db: Database) -> bool:
         user = await db.get_user(message.from_user.id)
-        return user is not None and user["state"] == "IN_DIALOGUE"
+        return user is not None and user.state == "IN_DIALOGUE"
 
 
 @router.message(Command("credit"))

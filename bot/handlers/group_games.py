@@ -1,6 +1,5 @@
 import asyncio
 import html
-import json
 import random
 import uuid
 from contextlib import suppress
@@ -14,6 +13,7 @@ from aiogram.types import Message
 from bot.config_reader import GameConfig
 from bot.db import Database
 from bot.dice_check import get_score_change, get_super_jackpot
+from bot.models.events import create_event
 
 router = Router()
 
@@ -137,8 +137,7 @@ async def on_dice_roll(message: Message, db: Database, game_config: GameConfig):
     # Обновляем баланс в БД
     await db.set_balance(user_id, new_balance)
 
-    # Логируем событие
-    event_id = str(uuid.uuid4())
+    # Логируем событие (Pydantic model)
     event_type = "win" if actual_change > 0 else "loss"
     metadata_dict = {
         "dice_value": dice_value,
@@ -146,10 +145,15 @@ async def on_dice_roll(message: Message, db: Database, game_config: GameConfig):
         "base_score_change": score_change,
         "super_jackpot_multiplier": super_multiplier,
     }
-    metadata = json.dumps(metadata_dict)
-    await db.add_event(
-        event_id, user_id, event_type, actual_change, metadata, chat_id=message.chat.id
+    event = create_event(
+        event_type=event_type,
+        event_id=str(uuid.uuid4()),
+        user_id=user_id,
+        amount=actual_change,
+        metadata=metadata_dict,
+        chat_id=message.chat.id,
     )
+    await db.add_event_from_model(event)
 
     # Обновляем статистику
     is_bankruptcy = new_balance <= 0
