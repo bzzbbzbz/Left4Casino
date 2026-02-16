@@ -16,6 +16,7 @@ dist/
 # Local config/secrets (never commit)
 .env
 .env.*
+groups.json
 settings.toml
 *.db
 *.sqlite*
