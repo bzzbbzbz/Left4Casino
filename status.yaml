@@ -1,0 +1,76 @@
+# Task status (source of truth for workflow)
+version: "1.0"
+
+tasks:
+  - id: TASK-001
+    name: "Development Diary Implementation"
+    status: DONE
+    spec: docs/specs/archive/TASK-001_DEV_DIARY.md
+    assignee: cursor-agent
+    priority: HIGH
+  - id: TASK-002
+    name: "Modern Python Project Configuration"
+    status: DONE
+    spec: docs/specs/archive/TASK-002_PYPROJECT_TOML.md
+    assignee: cursor-agent
+    priority: HIGH
+  - id: TASK-003
+    name: "Linters and Type Checking Setup"
+    status: DONE
+    spec: docs/specs/archive/TASK-003_LINTERS_SETUP.md
+    assignee: cursor-agent
+    priority: HIGH
+  - id: TASK-004
+    name: "Basic Unit Tests Implementation"
+    status: DONE
+    spec: docs/specs/archive/TASK-004_UNIT_TESTS.md
+    assignee: cursor-agent
+    priority: HIGH
+  - id: TASK-005
+    name: "Pydantic Models Implementation"
+    status: DONE
+    spec: docs/specs/archive/TASK-005_PYDANTIC_MODELS.md
+    assignee: cursor-agent
+    priority: HIGH
+  - id: TASK-006
+    name: "Test Structure Organization"
+    status: DONE
+    spec: docs/specs/archive/TASK-006_TEST_STRUCTURE.md
+    assignee: cursor-agent
+    priority: MEDIUM
+  - id: TASK-007
+    name: "Database Migrations System"
+    status: DONE
+    spec: docs/specs/archive/TASK-007_DB_MIGRATIONS.md
+    assignee: cursor-agent
+    priority: MEDIUM
+  - id: TASK-010
+    name: "Repository Pattern for Database"
+    status: DONE
+    spec: docs/specs/archive/TASK-010_REPOSITORY_PATTERN.md
+    assignee: cursor-agent
+    priority: MEDIUM
+  - id: TASK-011
+    name: "Semantic Regions for Critical Code"
+    status: DONE
+    spec: docs/specs/archive/TASK-011_SEMANTIC_REGIONS.md
+    assignee: cursor-agent
+    priority: MEDIUM
+  - id: TASK-012
+    name: "CI/CD Pipeline (GitHub Actions)"
+    status: DONE
+    spec: docs/specs/archive/TASK-012_CI_CD.md
+    assignee: cursor-agent
+    priority: MEDIUM
+  - id: TASK-013
+    name: "Comprehensive Event Test Coverage"
+    status: DONE
+    spec: docs/specs/archive/TASK-013_EVENT_TEST_COVERAGE.md
+    assignee: cursor-agent
+    priority: HIGH
+  - id: TASK-014
+    name: "Schedule Visibility and Idempotency"
+    status: DONE
+    spec: docs/specs/archive/TASK-014_SCHEDULE_VISIBILITY_AND_IDEMPOTENCY.md
+    assignee: cursor-agent
+    priority: HIGH

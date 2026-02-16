@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "left4casino-bot"
+version = "1.0.0"
+description = "Telegram casino bot with AI banker"
+readme = "telegram-casino-bot/README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram>=3.18.0,<4.0.0",
+    "pydantic>=2.0.0,<3.0.0",
+    "pydantic-settings>=2.0.0,<3.0.0",
+    "aiosqlite>=0.19.0,<1.0.0",
+    "apscheduler>=3.10.4,<4.0.0",
+    "async-timeout>=5.0.1,<6.0.0",
+    "cachetools>=5.5.2,<6.0.0",
+    "fluent-runtime>=0.4.0,<1.0.0",
+    "openai>=1.0.0,<2.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
+    "pytz>=2024.1,<2027.0",
+    "redis>=5.2.1,<6.0.0",
+    "structlog>=25.1.0,<26.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyright>=1.1.350,<2.0.0",
+    "pytest>=8.0.0,<9.0.0",
+    "pytest-asyncio>=0.23.0,<1.0.0",
+    "ruff>=0.3.0,<1.0.0",
+    "pre-commit>=3.6.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "telegram-casino-bot"}
+
+[tool.setuptools.packages.find]
+where = ["telegram-casino-bot"]
+include = ["bot*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    "__pycache__",
+    "*.egg-info",
+    ".venv",
+    "venv",
+    "telegram-casino-bot/bot/casino.db",
+    "telegram-casino-bot/bot/locale",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pyright]
+typeCheckingMode = "basic"
+pythonVersion = "3.11"
+pythonPlatform = "Linux"
+reportMissingTypeStubs = false
+reportMissingImports = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+# Relax so existing code passes; tighten later (TASK-003)
+reportArgumentType = "warning"
+reportAttributeAccessIssue = "warning"
+reportAssignmentType = "warning"
+reportOperatorIssue = "warning"
+reportMissingModuleSource = "warning"
+include = ["telegram-casino-bot/bot", "main.py"]
+exclude = ["**/__pycache__", "venv", ".venv"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["telegram-casino-bot"]
+markers = [
+    "unit: Fast unit tests without external dependencies",
+    "integration: Integration tests with database and bot",
+    "slow: Slow tests that take > 1 second",
+]

@@ -1,0 +1,14 @@
+# Generated from pyproject.toml
+aiogram>=3.18.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+async-timeout>=5.0.1
+cachetools>=5.5.2
+fluent-runtime>=0.4.0
+redis>=5.2.1
+structlog>=25.1.0
+aiosqlite>=0.19.0
+openai>=1.0.0
+python-dotenv>=1.0.0
+apscheduler>=3.10.4
+pytz>=2024.1

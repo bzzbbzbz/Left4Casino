@@ -1,0 +1,79 @@
+
+# Project Rules (v3.0)
+
+## 🎯 Global Directives
+- **Scope**: n8n-install не трогаем ВООБЩЕ. Все работы ведутся в telegram-casino-bot и в python-runner (docs, logs, status.yaml, scripts, pyproject.toml). Не изменять файлы родительского репозитория (docker-compose, Caddy, скрипты установки и т.д.).
+- **Source of Truth**: Always respect `status.yaml` for task management.
+- **Contract-First**: Never start implementation without a specification in `docs/specs/`.
+- **LSP-First**: Use Pyright for semantic analysis before and after any code changes.
+- **Linter**: Use `ruff` for linting and formatting.
+- **Dev Diary**: Architectural decisions are recorded in `logs/dev_diary.md` (see template there). When running `skill:archive`, always add a new entry to that file.
+- **Moving files**: Use actual move (e.g. `git mv from to`) so Git keeps history. Do not create a new file in the destination and delete the original.
+
+## 🛠 Skills & Protocols
+
+### [skill:spec] - Analyst Role
+- Trigger: User asks for a new feature.
+- Protocol: 
+  1. Ask clarifying questions.
+  2. Create `docs/specs/[TASK_ID].md`.
+  3. Use REQ-ID format: `[REQ-{TASK_ID}-{NN}]`.
+  4. Update `status.yaml` to `SPEC_READY`.
+
+### [skill:code] - Developer Role
+- Trigger: Task is `SPEC_READY` or `DEV_FIX_NEEDED`.
+- Protocol:
+  1. Use Type Hints and Pydantic.
+  2. Wrap logic in semantic regions:
+     ```python
+     # [START SPEC:{ID}:{NAME}]
+     # req_refs: REQ-ID-01, REQ-ID-02
+     ... implementation ...
+     # [END SPEC:{ID}:{NAME}]
+     ```
+  3. Run `./scripts/lint.sh` (or `ruff check --fix`, `ruff format --check`, `pyright`).
+  4. Update `status.yaml` → `CODE_WRITTEN`.
+- **Auto-transition**: When code is done and there are no doubts, **do not stop** — proceed immediately to `skill:validate` (run tests/lint, fix if needed, then continue to archive).
+
+### [skill:validate] - Tester/Reviewer Role
+- Trigger: Task is `CODE_WRITTEN`.
+- Protocol:
+  1. Write/Update `tests/test_[ID].py` (or existing test files for the task).
+  2. **Run tests**: `./scripts/test.sh` (or `pip install -e ".[dev]"` then `pytest tests/`). If failure, fix code or tests and re-run until **all tests pass**.
+  3. Run `./scripts/lint.sh`. If failure, fix and re-run until green.
+  4. Update `status.yaml` → `READY_TO_MERGE`.
+- **Gate for archive**: Proceed to `skill:archive` **only after all tests have passed** (pytest green). If tests do not run (e.g. ModuleNotFoundError, missing venv/deps), run `./scripts/test.sh` first (it installs dependencies and runs pytest). Do not archive a task until tests pass.
+- **Auto-transition**: When all checks **and tests** pass, **do not stop** — proceed immediately to `skill:archive` (diary, move spec, DONE, commit).
+
+### [skill:archive] - Writer Role
+- Trigger: Task is `READY_TO_MERGE` **and tests have already passed** (pytest green). Do not run archive if tests were not run or have failed.
+- Protocol:
+  1. Append a new entry to `logs/dev_diary.md` using the template in that file (Decision, Reasoning, Alternatives considered, Trade-offs, Result, References).
+  2. Move spec to `docs/specs/archive/` with `mv` or `git mv` (do not copy then delete).
+  3. Set status to `DONE` in `status.yaml`; set `spec` to path in `archive/`.
+  4. `git commit` with message containing task ID (e.g. `TASK-004: ...`).
+- No auto-transition after this; task is complete.
+
+## Semantic Regions
+
+When encountering code with `[START SPEC:...]` markers:
+1. READ the REQ and Source comments.
+2. DO NOT modify code inside regions without explicit user request.
+3. If asked to refactor, mention: "This region is marked as critical (SPEC_ID)".
+4. When writing NEW code from specifications, ALWAYS add semantic regions.
+
+Format:
+```python
+# [START SPEC:{SPEC_ID}:{NAME}]
+# REQ: {requirement}
+# Source: {spec file}
+{code}
+# [END SPEC:{SPEC_ID}]
+```
+See `docs/SEMANTIC_REGIONS_GUIDE.md` for full conventions.
+
+## 🐍 Python Best Practices
+- Use `asyncio` for I/O bound tasks (Bot, Scraper).
+- Prefer `pathlib` over `os.path`.
+- Always include Docstrings with Pre/Post conditions.
+
