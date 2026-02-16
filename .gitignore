@@ -1,10 +1,31 @@
-.idea/
-/venv/
-/.venv/
-.vscode/
-*.ipynb
-docker-compose.yml
+# Python: virtualenv, caches, build artifacts
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.ipynb_checkpoints/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Local config/secrets (never commit)
 .env
-/redis.conf
-/settings.toml
-casino.db
+.env.*
+settings.toml
+*.db
+*.sqlite*
+telegram-casino-bot/settings.toml
+telegram-casino-bot/redis.conf
+telegram-casino-bot/casino.db
+telegram-casino-bot/docker-compose.yml
+
+# IDE / OS
+.idea/
+.vscode/
+.cursor/
+.DS_Store
