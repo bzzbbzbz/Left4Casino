@@ -20,10 +20,6 @@ groups.json
 settings.toml
 *.db
 *.sqlite*
-telegram-casino-bot/settings.toml
-telegram-casino-bot/redis.conf
-telegram-casino-bot/casino.db
-telegram-casino-bot/docker-compose.yml
 
 # IDE / OS
 .idea/
