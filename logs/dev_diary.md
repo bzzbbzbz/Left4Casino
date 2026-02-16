@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-02-16: TASK-015 Automated Daily Backups (Spec Created)
+
+**Decision**: Создана спецификация для автоматического ежедневного бэкапа критичных файлов (casino.db, settings.toml, groups.json) в 00:00 с отправкой архива админу в Telegram. Сервис `BackupService` будет создавать tar.gz архивы, отправлять их через `bot.send_document()` на `admin_id` из конфига, и ротировать старые бэкапы (хранить последние 7).
+
+**Reasoning**: После недавнего инцидента с потерей БД из-за gitignore стало очевидно, что нужна автоматическая система disaster recovery. Ежедневные бэкапы в Telegram обеспечивают: (1) быстрое восстановление после сбоя сервера, (2) защиту от human error, (3) audit trail состояния бота, (4) доступность бэкапов из любого места (Telegram как облачное хранилище).
+
+**Alternatives considered**: 
+- Бэкап только локально без отправки в Telegram — отклонено, так как при потере сервера локальные бэкапы тоже теряются
+- Загрузка в S3/Google Drive — отклонено как избыточное усложнение; Telegram проще и доступнее для небольшого проекта
+- Бэкап каждый час — отклонено, так как БД меняется не так часто, достаточно ежедневного снимка
+
+**Trade-offs**: 
+- Архив содержит `settings.toml` с bot token и API keys → отправляется только админу (не в группы), в будущем можно добавить шифрование
+- Retention 7 дней занимает ~77 MB в `/tmp` → приемлемо для текущего размера БД
+- Бэкап в 00:00 совпадает с другими cron-задачами (daily reports, schedule generation) → все выполняются async, не блокируют друг друга
+
+**Result**: Спецификация `TASK-015_AUTOMATED_BACKUPS.md` готова к реализации. Включает: детальный API design, конфигурацию, scheduler integration, error handling, unit/integration тесты, manual testing checklist. Задача зарегистрирована в `status.yaml` со статусом `SPEC_READY`.
+
+**References**: TASK-015, `docs/specs/TASK-015_AUTOMATED_BACKUPS.md`, `settings.toml` ([reports].admin_id), `bot/__main__.py` (scheduler), `bot/services/daily_stats.py` (пример Telegram отправки).
+
+---
+
 ## 2026-02-16: TASK-014 Schedule Visibility and Idempotency
 
 **Decision**: Добавлена персистентность расписания через таблицу `scheduled_events` и связанный DB API (`upsert/get/update_status/expire`). Планировщик в `bot/__main__.py` переведён на startup rehydrate: сначала загружает persisted-события на текущий день, затем только при их отсутствии генерирует новое расписание. Добавлен скрипт `get_schedule_info.py` для просмотра ближайших событий happy moment/heist. Также в подмодуле добавлен ignore для Python кэшей (`__pycache__/`, `*.py[cod]`) и кэш-файлы удалены из git-индекса.

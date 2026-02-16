@@ -26,3 +26,4 @@ settings.toml
 .vscode/
 .cursor/
 .DS_Store
+python-runner-old/

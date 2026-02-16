@@ -74,3 +74,9 @@ tasks:
     spec: docs/specs/archive/TASK-014_SCHEDULE_VISIBILITY_AND_IDEMPOTENCY.md
     assignee: cursor-agent
     priority: HIGH
+  - id: TASK-015
+    name: "Automated Daily Backups"
+    status: SPEC_READY
+    spec: docs/specs/TASK-015_AUTOMATED_BACKUPS.md
+    assignee: cursor-agent
+    priority: HIGH

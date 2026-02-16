@@ -33,6 +33,7 @@ from bot.middlewares.logging import LoggingMiddleware
 from bot.middlewares.restrictions import ChatRestrictionMiddleware
 from bot.middlewares.throttling import ThrottlingMiddleware
 from bot.middlewares.tracker import GroupTrackerMiddleware
+from bot.repositories import RepositoryFactory
 from bot.services.ai import AIClient
 from bot.services.backfill import backfill_usernames
 from bot.services.daily_stats import DailyStatsService
@@ -119,6 +120,9 @@ async def main():
         timezone_str=reports_config.timezone,
     )
 
+    # Repository factory for dependency injection
+    repo_factory = RepositoryFactory(db.db_path)
+
     # Creating dispatcher with some dependencies
     dp = Dispatcher(
         storage=storage,
@@ -131,6 +135,7 @@ async def main():
         happy_moment_service=happy_moment_service,
         heist_service=heist_service,
         bot=bot,
+        repo_factory=repo_factory,
     )
 
     # Register middleware
@@ -199,12 +204,13 @@ async def main():
     # Dice fights timeout handlers
     async def check_expired_challenges():
         """Expire pending challenges older than timeout"""
-        expired = await db.get_expired_challenges_with_message(
+        challenge_repo = repo_factory.create_challenge_repo()
+        expired = await challenge_repo.get_expired_challenges_with_message(
             dice_fights_config.challenge_timeout_minutes
         )
         for challenge in expired:
             try:
-                await db.cancel_challenge(challenge["challenge_id"])
+                await challenge_repo.cancel_challenge(challenge["challenge_id"])
                 # Edit the message to show expiration
                 if challenge.get("message_id"):
                     import html
@@ -214,21 +220,28 @@ async def main():
 
                     nickname = challenge.get("initiator_nickname") or "Игрок"
                     bet = challenge.get("bet_amount", 0)
+                    escaped_nickname = html.escape(str(nickname))
+                    message_text = (
+                        f"⏰ <b>Вызов истёк</b>\n\n"
+                        f"Никто не принял вызов @{escaped_nickname} на {bet} очков."
+                    )
                     with suppress(TelegramBadRequest):
                         await bot.edit_message_text(
                             chat_id=challenge["chat_id"],
                             message_id=challenge["message_id"],
-                            text=f"⏰ <b>Вызов истёк</b>\n\nНикто не принял вызов @{html.escape(str(nickname))} на {bet} очков.",
+                            text=message_text,
                         )
             except Exception:
                 pass
 
     async def check_duel_timeouts():
         """Auto-roll for players who didn't roll in time"""
-        timed_out = await db.get_timed_out_duels(dice_fights_config.roll_timeout_minutes)
+        challenge_repo = repo_factory.create_challenge_repo()
+        timeout_min = dice_fights_config.roll_timeout_minutes
+        timed_out = await challenge_repo.get_timed_out_duels(timeout_min)
         for challenge in timed_out:
             try:
-                await dice_fight.auto_roll_for_timeout(db, bot, challenge)
+                await dice_fight.auto_roll_for_timeout(repo_factory, bot, challenge)
             except Exception:
                 pass
 

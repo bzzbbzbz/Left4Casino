@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "left4casino-bot"
 version = "1.0.0"
 description = "Telegram casino bot with AI banker"
-readme = "telegram-casino-bot/README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "aiogram>=3.18.0,<4.0.0",
@@ -34,10 +34,10 @@ dev = [
 ]
 
 [tool.setuptools]
-package-dir = {"" = "telegram-casino-bot"}
+package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
-where = ["telegram-casino-bot"]
+where = ["."]
 include = ["bot*"]
 
 [tool.ruff]
