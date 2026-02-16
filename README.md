@@ -1,8 +1,6 @@
 [<img src="https://img.shields.io/badge/Telegram-%40Left4CasinoBot-blue">](https://t.me/Left4CasinoBot)
-[![Tests](https://github.com/OWNER/REPO/actions/workflows/test.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/test.yml)
-[![Lint](https://github.com/OWNER/REPO/actions/workflows/lint.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/lint.yml)
-
-> Replace **OWNER/REPO** in the badges above with your GitHub org/repo (e.g. `myorg/n8n-install`). If the repo root is not the project root, copy `.github/workflows` to the repo root so GitHub Actions can run.
+[![Tests](https://github.com/bzzbbzbz/Left4Casino/actions/workflows/test.yml/badge.svg)](https://github.com/bzzbbzbz/Left4Casino/actions/workflows/test.yml)
+[![Lint](https://github.com/bzzbbzbz/Left4Casino/actions/workflows/lint.yml/badge.svg)](https://github.com/bzzbbzbz/Left4Casino/actions/workflows/lint.yml)
 
 # Left4Casino
 
