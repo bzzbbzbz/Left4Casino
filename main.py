@@ -10,7 +10,8 @@ sys.path.insert(0, bot_path)
 
 # Set configuration path if not already set
 if "CONFIG_FILE_PATH" not in os.environ:
-    config_path = os.path.join(bot_path, "settings.toml")
+    # settings.toml is in the root directory (python-runner/), not in telegram-casino-bot/
+    config_path = os.path.join(os.path.dirname(__file__), "settings.toml")
     os.environ["CONFIG_FILE_PATH"] = config_path
     print(f"Config file set to: {config_path}")
 
