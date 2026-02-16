@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from bot.services.happy_moment import HappyMomentService, HappyMomentTier, ScheduledMoment
 from bot.services.heist import HeistService, HeistState
 

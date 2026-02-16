@@ -3,6 +3,7 @@
 import uuid
 
 import pytest
+
 from bot.db import Database
 
 

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 import pytz
 import structlog
 from aiogram import Bot
+
 from bot.db import Database
 
 logger = structlog.get_logger()

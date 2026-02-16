@@ -37,7 +37,9 @@ def get_structlog_config(log_config: LogConfig) -> dict:
         # Create handler for stdlib logging
         standard_handler = logging.StreamHandler(stream=stdout)
         standard_handler.setFormatter(
-            structlog.stdlib.ProcessorFormatter(processors=get_processors(log_config))
+            structlog.stdlib.ProcessorFormatter(
+                processors=get_processors(log_config, include_drop_aiogram=False)
+            )
         )
 
         # Configure root logger to use this handler
@@ -53,7 +55,7 @@ def get_structlog_config(log_config: LogConfig) -> dict:
     }
 
 
-def get_processors(log_config: LogConfig) -> list:
+def get_processors(log_config: LogConfig, include_drop_aiogram: bool = True) -> list:
     def custom_json_serializer(data, *args, **kwargs):
         result = dict()
 
@@ -72,7 +74,8 @@ def get_processors(log_config: LogConfig) -> list:
         return dumps(result, default=str)
 
     processors = list()
-    processors.append(DropAiogramUpdateEvents())
+    if include_drop_aiogram:
+        processors.append(DropAiogramUpdateEvents())
     if log_config.show_datetime is True:
         processors.append(
             structlog.processors.TimeStamper(

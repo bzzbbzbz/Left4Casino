@@ -5,6 +5,7 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from bot.db import Database
 
 

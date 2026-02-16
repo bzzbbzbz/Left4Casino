@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 import pytz
 import structlog
 from aiogram import Bot
+
 from bot.db import Database
 from bot.utils.formatters import format_number
 

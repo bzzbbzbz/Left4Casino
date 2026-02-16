@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
 import pytest
+
 from bot.handlers.safe import cmd_safe
 from bot.handlers.transfer import cmd_give
 from bot.repositories import RepositoryFactory

@@ -4,6 +4,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from bot.handlers.group_games import cmd_stats, cmd_top
 
 

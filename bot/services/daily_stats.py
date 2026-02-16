@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 import pytz
 from aiogram import Bot
+
 from bot.db import Database
 from bot.utils.formatters import format_number
 
@@ -213,7 +214,11 @@ class DailyStatsService:
                         rewarded_users.add(uid)
 
                 val = cat_data["max_val"]
-                val_str = str(val) if isinstance(val, float) and not val.is_integer() else format_number(int(val))
+                val_str = (
+                    str(val)
+                    if isinstance(val, float) and not val.is_integer()
+                    else format_number(int(val))
+                )
                 lines.append(
                     f"{cat_data['label']} — {', '.join(names)} ({val_str}) +{reward_val} очков!"
                 )

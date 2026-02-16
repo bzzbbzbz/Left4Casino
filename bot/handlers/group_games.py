@@ -44,41 +44,93 @@ async def cmd_balance(message: Message, db: Database, game_config: GameConfig):
 # Обработчик команды /stats
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, db: Database):
+    if not message.from_user:
+        return
+
     if message.chat.type not in ("group", "supergroup"):
         await message.reply("Эта команда работает только в группах.")
         return
 
-    top_users = await db.get_top_users_in_group(message.chat.id, limit=30)
+    target_user_id = message.from_user.id
+    target_nickname = message.from_user.username or "unknown"
 
+    command_parts = (message.text or "").split(maxsplit=1)
+    target_username = command_parts[1].strip() if len(command_parts) > 1 else None
+
+    if target_username:
+        user = await db.get_user_by_nickname(target_username)
+        if user is None:
+            await message.reply(f"Пользователь {html.escape(target_username)} не найден.")
+            return
+        target_user_id = user["user_id"]
+        target_nickname = user.get("nickname") or target_nickname
+
+    top_users = await db.get_top_users_in_group(message.chat.id, limit=1000)
+    user_row = next((u for u in top_users if u["user_id"] == target_user_id), None)
+    rank = next(
+        (idx for idx, u in enumerate(top_users, start=1) if u["user_id"] == target_user_id), None
+    )
+
+    balance = await db.get_balance(target_user_id, 50)
+    games = user_row.get("games_played", 0) if user_row else 0
+    won = user_row.get("total_won", 0) if user_row else 0
+    lost = user_row.get("total_lost", 0) if user_row else 0
+    bankruptcy = user_row.get("bankruptcy_count", 0) if user_row else 0
+
+    safe_nickname = html.escape(str(target_nickname))
+    text = (
+        f"📊 <b>Статистика игрока {safe_nickname}</b>\n\n"
+        f"💰 Баланс: {format_number(balance)}\n"
+        f"🎰 Всего игр: {format_number(games)}\n"
+        f"🤑 Выиграно очков: {format_number(won)}\n"
+        f"📉 Потрачено очков: {format_number(lost)}\n"
+        f"💀 Банкротств: {format_number(bankruptcy)}\n"
+        f"🏅 Позиция в рейтинге: {rank or '—'}"
+    )
+    await message.reply(text)
+
+
+def _build_top_text(top_users: list[dict], caller_id: int, chat_title: str) -> str:
     if not top_users:
-        await message.reply("В этом чате пока нет активных игроков.")
-        return
+        return "В этом чате пока нет активных игроков."
 
-    chat_title = html.escape(message.chat.title or "Unknown Group")
-    text = [f"🏆 <b>Топ игроков чата {chat_title}:</b>\n"]
+    chat_title_safe = html.escape(chat_title)
+    top10 = top_users[:10]
+    lines = [f"🏆 <b>Топ игроков чата {chat_title_safe}:</b>\n"]
 
-    for idx, user in enumerate(top_users, start=1):
+    for idx, user in enumerate(top10, start=1):
         nickname = user["nickname"] or "Безымянный"
         balance = user["balance"]
-        games = user.get("games_played", 0)
-        won = user.get("total_won", 0)
-        lost = user.get("total_lost", 0)
-        winrate = round(won / (won + lost) * 100, 2) if (won + lost) > 0 else 0
-        bk = user.get("bankruptcy_count", 0)
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, "")
+        place = f"{idx}. {medal}" if medal else f"{idx}."
+        lines.append(
+            f"{place} <b>{html.escape(str(nickname))}</b> — {format_number(balance)} очков"
+        )
 
-        safe_nickname = html.escape(str(nickname))
-        # Add stats to display if they exist (games > 0)
-        if games > 0:
-            stats_part = (
-                f"\n      🎰 Всего игр: {format_number(games)}"
-                f"\n      📈 Выиграно очков: {format_number(won)} | Потрачено: {format_number(lost)} | WR: {winrate}%"
-                f"\n      💀 Банкротств: {format_number(bk)}"
-            )
-            text.append(f"{idx}. <b>{safe_nickname}</b> — {format_number(balance)} очков{stats_part}\n")
-        else:
-            text.append(f"{idx}. <b>{safe_nickname}</b> — {format_number(balance)} очков\n")
+    caller_rank = next(
+        (idx for idx, user in enumerate(top_users, start=1) if user["user_id"] == caller_id), None
+    )
+    if caller_rank and caller_rank > 10:
+        caller_user = top_users[caller_rank - 1]
+        caller_name = html.escape(str(caller_user["nickname"] or "Безымянный"))
+        caller_balance = format_number(caller_user["balance"])
+        lines.append(f"\n👤 Ты: {caller_rank}. <b>{caller_name}</b> — {caller_balance} очков")
 
-    await message.reply("\n".join(text))
+    return "\n".join(lines)
+
+
+@router.message(Command("top"))
+async def cmd_top(message: Message, db: Database):
+    if not message.from_user:
+        return
+
+    if message.chat.type not in ("group", "supergroup"):
+        await message.reply("Эта команда работает только в группах.")
+        return
+
+    top_users = await db.get_top_users_in_group(message.chat.id, limit=1000)
+    text = _build_top_text(top_users, message.from_user.id, message.chat.title or "Unknown Group")
+    await message.reply(text)
 
 
 # Обработчик броска кубика
@@ -188,7 +240,9 @@ async def on_dice_roll(message: Message, db: Database, game_config: GameConfig):
             )
             await message.reply(msg_text)
         else:
-            await message.reply(f"Вы выиграли {format_number(actual_change)} очков! Ваш баланс: {format_number(new_balance)}")
+            await message.reply(
+                f"Вы выиграли {format_number(actual_change)} очков! Ваш баланс: {format_number(new_balance)}"
+            )
 
     # 2. Банкрот (баланс стал <= 0, но был > 0)
     elif new_balance <= 0:

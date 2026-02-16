@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import pytest
+
 from bot.handlers.dice_fight import auto_roll_for_timeout
 from bot.repositories import RepositoryFactory
 

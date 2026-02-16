@@ -3,6 +3,7 @@ import asyncio
 import aiosqlite
 import structlog
 from aiogram import Bot
+
 from bot.db import Database
 
 logger = structlog.get_logger()

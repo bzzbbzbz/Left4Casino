@@ -4,9 +4,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import structlog
+from structlog.stdlib import ProcessorFormatter
+
 from bot.config_reader import LogConfig, LogRenderer
 from bot.logs import DropAiogramUpdateEvents, get_processors, get_structlog_config
-from structlog.stdlib import ProcessorFormatter
 
 pytestmark = pytest.mark.unit
 

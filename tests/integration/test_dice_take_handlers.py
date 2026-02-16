@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from bot.config_reader import DiceFightsConfig
 from bot.handlers.dice_fight import cmd_dice, cmd_take
 from bot.repositories import RepositoryFactory

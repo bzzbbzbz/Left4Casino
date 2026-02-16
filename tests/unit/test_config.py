@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import pytest
+
 from bot.config_reader import GameConfig, get_config
 from bot.middlewares.throttling import ThrottlingMiddleware
 

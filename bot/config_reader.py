@@ -133,9 +133,7 @@ def parse_config_file() -> dict:
 
 
 @lru_cache
-def get_config(
-    model: type[ConfigType], root_key: str, required: bool = True
-) -> ConfigType:
+def get_config(model: type[ConfigType], root_key: str, required: bool = True) -> ConfigType:
     config_dict = parse_config_file()
     if root_key not in config_dict:
         if required:

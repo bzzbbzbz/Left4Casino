@@ -175,5 +175,32 @@ class ChallengeRepository(BaseRepository[Any]):
             (bet, user_id),
         )
 
+    async def get_expired_challenges_with_message(
+        self, timeout_minutes: int = 5
+    ) -> list[dict[str, Any]]:
+        """Get pending challenges with message_id older than timeout."""
+        rows = await self._fetchall(
+            """SELECT * FROM dice_challenges
+               WHERE status = 'pending'
+                 AND message_id IS NOT NULL
+                 AND created_at <= datetime('now', ?)
+               ORDER BY created_at ASC""",
+            (f"-{timeout_minutes} minutes",),
+        )
+        return [self._row_to_challenge(row) for row in rows]
+
+    async def get_timed_out_duels(self, timeout_minutes: int = 5) -> list[dict[str, Any]]:
+        """Get accepted/rolling duels older than timeout that are not completed."""
+        rows = await self._fetchall(
+            """SELECT * FROM dice_challenges
+               WHERE status IN ('accepted', 'rolling')
+                 AND accepted_at IS NOT NULL
+                 AND accepted_at <= datetime('now', ?)
+                 AND completed_at IS NULL
+               ORDER BY accepted_at ASC""",
+            (f"-{timeout_minutes} minutes",),
+        )
+        return [self._row_to_challenge(row) for row in rows]
+
 
 # [END SPEC:TASK-010:challenge-repository]

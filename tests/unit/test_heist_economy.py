@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from bot.services.heist import HeistService, HeistState
 
 pytestmark = pytest.mark.unit

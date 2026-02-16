@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from bot.config_reader import GameConfig
 from bot.handlers.default_commands import cmd_start
 from bot.handlers.group_games import cmd_balance

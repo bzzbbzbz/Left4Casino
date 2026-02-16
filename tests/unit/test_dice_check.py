@@ -1,6 +1,7 @@
 """Unit tests for slot dice logic (bot/dice_check.py)."""
 
 import pytest
+
 from bot.dice_check import get_combo_parts, get_score_change
 
 pytestmark = pytest.mark.unit
