@@ -22,7 +22,8 @@ def _build_fake_dispatcher() -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_main_registers_duel_happy_heist_scheduler_jobs() -> None:
+@pytest.mark.parametrize("backups_enabled", [True, False])
+async def test_main_registers_duel_happy_heist_scheduler_jobs(backups_enabled: bool) -> None:
     with patch("dotenv.load_dotenv", return_value=True):
         from bot import __main__ as bot_main
 
@@ -41,7 +42,7 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs() -> None:
         "ai": SimpleNamespace(api_key="test-key", provider="mock", model="gpt-4o-mini"),
         "reports": SimpleNamespace(timezone="UTC", admin_id=1),
         "backups": SimpleNamespace(
-            enabled=True,
+            enabled=backups_enabled,
             retention_days=7,
             backup_dir="/tmp/casino_backups",
         ),
@@ -151,7 +152,7 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs() -> None:
     assert "check_duel_timeouts" in job_names
     assert "generate_happy_moment_schedule" in job_names
     assert "generate_heist_schedule" in job_names
-    assert "run_daily_backup" in job_names
+    assert ("run_daily_backup" in job_names) is backups_enabled
     assert "start_happy_moment" in job_names
     assert "start_heist" in job_names
     assert scheduler_mock.start.called

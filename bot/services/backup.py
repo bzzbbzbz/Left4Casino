@@ -1,9 +1,11 @@
 """Automated backup service for critical bot runtime files."""
 
 import asyncio
+import os
 import sqlite3
 import tarfile
 import tempfile
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -112,27 +114,74 @@ class BackupService:
         await self.rotate_old_backups()
 
     def _create_backup_sync(self) -> BackupResult:
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_secure_backup_dir()
         created_at = datetime.now(self.timezone)
-        backup_path = self.backup_dir / f"backup_{created_at:%Y%m%d_%H%M%S}.tar.gz"
+        backup_path = self._new_backup_path(created_at)
+        temp_backup_path = self.backup_dir / f".{backup_path.name}.{uuid.uuid4().hex}.tmp"
         files: list[BackupFileStatus] = []
 
-        with tempfile.TemporaryDirectory(prefix="backup_work_", dir=self.backup_dir) as temp_dir:
-            temp_path = Path(temp_dir)
-            db_snapshot = temp_path / "casino.db"
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="backup_work_", dir=self.backup_dir
+            ) as temp_dir:
+                temp_path = Path(temp_dir)
+                db_snapshot = temp_path / "casino.db"
 
-            with tarfile.open(backup_path, "w:gz") as archive:
-                db_status = self._snapshot_sqlite_db(db_snapshot)
-                if db_status.included:
-                    archive.add(db_snapshot, arcname=db_status.arcname)
-                files.append(db_status)
+                with self._open_secure_tar(temp_backup_path) as archive:
+                    db_status = self._snapshot_sqlite_db(db_snapshot)
+                    if db_status.included:
+                        db_status = self._add_file_to_archive(
+                            archive,
+                            source_path=db_snapshot,
+                            arcname=db_status.arcname,
+                            reported_source_path=self.db_path,
+                        )
+                    files.append(db_status)
 
-                for source_path, arcname in self._plain_files():
-                    status = self._add_plain_file(archive, source_path, arcname)
-                    files.append(status)
+                    for source_path, arcname in self._plain_files():
+                        status = self._add_file_to_archive(
+                            archive,
+                            source_path=source_path,
+                            arcname=arcname,
+                        )
+                        files.append(status)
 
-        backup_path.chmod(0o600)
+            temp_backup_path.replace(backup_path)
+        except Exception:
+            temp_backup_path.unlink(missing_ok=True)
+            backup_path.unlink(missing_ok=True)
+            raise
+
         return BackupResult(path=backup_path, created_at=created_at, files=tuple(files))
+
+    def _ensure_secure_backup_dir(self) -> None:
+        self.backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.backup_dir.chmod(0o700)
+
+    def _new_backup_path(self, created_at: datetime) -> Path:
+        for _ in range(100):
+            candidate = self.backup_dir / f"backup_{created_at:%Y%m%d_%H%M%S_%f}.tar.gz"
+            if not candidate.exists():
+                return candidate
+            created_at = datetime.now(self.timezone)
+        return self.backup_dir / f"backup_{created_at:%Y%m%d_%H%M%S_%f}_{uuid.uuid4().hex}.tar.gz"
+
+    def _open_secure_tar(self, temp_backup_path: Path) -> tarfile.TarFile:
+        fd = os.open(
+            temp_backup_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            fileobj = os.fdopen(fd, "wb")
+        except Exception:
+            os.close(fd)
+            raise
+        try:
+            return tarfile.open(fileobj=fileobj, mode="w:gz")
+        except Exception:
+            fileobj.close()
+            raise
 
     def _snapshot_sqlite_db(self, snapshot_path: Path) -> BackupFileStatus:
         arcname = "bot/casino.db"
@@ -170,27 +219,43 @@ class BackupService:
         files.append((self.groups_path, "groups.json"))
         return tuple(files)
 
-    def _add_plain_file(
-        self, archive: tarfile.TarFile, source_path: Path, arcname: str
+    def _add_file_to_archive(
+        self,
+        archive: tarfile.TarFile,
+        *,
+        source_path: Path,
+        arcname: str,
+        reported_source_path: Path | None = None,
     ) -> BackupFileStatus:
+        status_source_path = reported_source_path or source_path
         if not source_path.exists():
             return BackupFileStatus(
                 arcname=arcname,
-                source_path=source_path,
+                source_path=status_source_path,
                 included=False,
                 reason="not_found",
             )
 
-        archive.add(source_path, arcname=arcname)
+        try:
+            size_bytes = source_path.stat().st_size
+            archive.add(source_path, arcname=arcname)
+        except Exception as error:
+            return BackupFileStatus(
+                arcname=arcname,
+                source_path=status_source_path,
+                included=False,
+                reason=f"archive_add_failed: {error}",
+            )
+
         return BackupFileStatus(
             arcname=arcname,
-            source_path=source_path,
+            source_path=status_source_path,
             included=True,
-            size_bytes=source_path.stat().st_size,
+            size_bytes=size_bytes,
         )
 
     def _rotate_old_backups_sync(self) -> int:
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_secure_backup_dir()
         backups = sorted(
             self.backup_dir.glob("backup_*.tar.gz"),
             key=lambda path: path.stat().st_mtime,
