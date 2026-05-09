@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bot.config_reader import BackupsConfig, GameConfig, get_config
+from bot.config_reader import BackupsConfig, CodeQualityReportConfig, GameConfig, get_config
 from bot.middlewares.throttling import ThrottlingMiddleware
 
 pytestmark = pytest.mark.unit
@@ -115,5 +115,37 @@ class TestBackupsConfig:
                 assert cfg.enabled is True
                 assert cfg.retention_days == 7
                 assert cfg.backup_dir == "/tmp/casino_backups"
+            finally:
+                get_config.cache_clear()
+
+
+class TestCodeQualityReportConfig:
+    """Daily code quality report config must be safe by default."""
+
+    def test_validate_empty_dict_uses_safe_defaults(self) -> None:
+        cfg = CodeQualityReportConfig.model_validate({})
+        assert cfg.enabled is False
+        assert cfg.hour == 9
+        assert cfg.minute == 0
+        assert cfg.container_name == "python-runner"
+        assert cfg.output_dir == "/tmp/casino_code_quality"
+        assert cfg.opencode_timeout_seconds == 120
+
+    def test_container_name_validation_rejects_shell_metacharacters(self) -> None:
+        with pytest.raises(ValueError):
+            CodeQualityReportConfig.model_validate({"container_name": "python-runner; rm -rf /"})
+
+    def test_get_config_returns_defaults_when_section_missing(self) -> None:
+        with patch("bot.config_reader.parse_config_file") as parse:
+            parse.return_value = {}
+            get_config.cache_clear()
+            try:
+                cfg = get_config(
+                    model=CodeQualityReportConfig,
+                    root_key="code_quality_report",
+                    required=False,
+                )
+                assert cfg.enabled is False
+                assert cfg.output_dir == "/tmp/casino_code_quality"
             finally:
                 get_config.cache_clear()

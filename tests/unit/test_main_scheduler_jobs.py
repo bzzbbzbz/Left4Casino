@@ -23,7 +23,10 @@ def _build_fake_dispatcher() -> MagicMock:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backups_enabled", [True, False])
-async def test_main_registers_duel_happy_heist_scheduler_jobs(backups_enabled: bool) -> None:
+@pytest.mark.parametrize("code_quality_enabled", [True, False])
+async def test_main_registers_duel_happy_heist_scheduler_jobs(
+    backups_enabled: bool, code_quality_enabled: bool
+) -> None:
     with patch("dotenv.load_dotenv", return_value=True):
         from bot import __main__ as bot_main
 
@@ -45,6 +48,13 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs(backups_enabled: b
             enabled=backups_enabled,
             retention_days=7,
             backup_dir="/tmp/casino_backups",
+        ),
+        "code_quality_report": SimpleNamespace(
+            enabled=code_quality_enabled,
+            hour=9,
+            minute=15,
+            output_dir="/tmp/casino_code_quality",
+            container_name="python-runner",
         ),
         "dice_fights": SimpleNamespace(challenge_timeout_minutes=5, roll_timeout_minutes=5),
         "happy_moment": SimpleNamespace(
@@ -108,6 +118,8 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs(backups_enabled: b
     logger_mock.ainfo = AsyncMock(return_value=None)
     backup_service_mock = MagicMock()
     backup_service_mock.run_backup = AsyncMock()
+    code_quality_service_mock = MagicMock()
+    code_quality_service_mock.run_report = AsyncMock()
 
     with patch.object(bot_main, "get_config", side_effect=_fake_get_config):
         with patch.object(bot_main, "Database", return_value=db_mock):
@@ -139,9 +151,16 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs(backups_enabled: b
                                                         return_value=backup_service_mock,
                                                     ) as backup_cls:
                                                         with patch.object(
-                                                            bot_main, "getenv", return_value=None
-                                                        ):
-                                                            await bot_main.main()
+                                                            bot_main,
+                                                            "CodeQualityReportService",
+                                                            return_value=code_quality_service_mock,
+                                                        ) as quality_cls:
+                                                            with patch.object(
+                                                                bot_main,
+                                                                "getenv",
+                                                                return_value=None,
+                                                            ):
+                                                                await bot_main.main()
 
     job_names = []
     for call in scheduler_mock.add_job.call_args_list:
@@ -153,6 +172,7 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs(backups_enabled: b
     assert "generate_happy_moment_schedule" in job_names
     assert "generate_heist_schedule" in job_names
     assert ("run_daily_backup" in job_names) is backups_enabled
+    assert ("run_daily_code_quality_report" in job_names) is code_quality_enabled
     assert "start_happy_moment" in job_names
     assert "start_heist" in job_names
     assert scheduler_mock.start.called
@@ -160,3 +180,7 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs(backups_enabled: b
     backup_kwargs = backup_cls.call_args.kwargs
     expected_settings_path = Path(bot_main.__file__).resolve().parents[1] / "settings.toml"
     assert backup_kwargs["settings_path"] == expected_settings_path
+    quality_cls.assert_called_once()
+    quality_kwargs = quality_cls.call_args.kwargs
+    assert quality_kwargs["admin_id"] == 1
+    assert quality_kwargs["timezone_str"] == "UTC"

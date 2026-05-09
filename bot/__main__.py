@@ -18,6 +18,7 @@ from bot.config_reader import (
     BackupsConfig,
     BotConfig,
     ChatRestrictionsConfig,
+    CodeQualityReportConfig,
     DiceFightsConfig,
     FSMMode,
     GameConfig,
@@ -40,6 +41,7 @@ from bot.repositories import RepositoryFactory
 from bot.services.ai import AIClient
 from bot.services.backfill import backfill_usernames
 from bot.services.backup import BackupService
+from bot.services.code_quality_report import CodeQualityReportService
 from bot.services.daily_stats import DailyStatsService
 from bot.services.happy_moment import HappyMomentService, HappyMomentTier
 from bot.services.heist import HeistService
@@ -87,6 +89,9 @@ async def main():
     ai_config = get_config(model=AIConfig, root_key="ai")
     reports_config = get_config(model=ReportsConfig, root_key="reports")
     backups_config = get_config(model=BackupsConfig, root_key="backups", required=False)
+    code_quality_report_config = get_config(
+        model=CodeQualityReportConfig, root_key="code_quality_report", required=False
+    )
 
     dice_fights_config = get_config(model=DiceFightsConfig, root_key="dice_fights", required=False)
     happy_moment_config = get_config(
@@ -192,6 +197,13 @@ async def main():
         admin_id=reports_config.admin_id,
         timezone_str=reports_config.timezone,
     )
+    code_quality_report_service = CodeQualityReportService(
+        config=code_quality_report_config,
+        project_root=project_root,
+        bot=bot,
+        admin_id=reports_config.admin_id,
+        timezone_str=reports_config.timezone,
+    )
 
     async def send_daily_reports():
         # Send to all allowed chats
@@ -216,6 +228,9 @@ async def main():
     async def run_daily_backup():
         await backup_service.run_backup()
 
+    async def run_daily_code_quality_report():
+        await code_quality_report_service.run_report()
+
     # Schedule daily report at 00:00 UTC+5
     scheduler.add_job(send_daily_reports, "cron", hour=0, minute=0, timezone=timezone)
 
@@ -227,6 +242,17 @@ async def main():
             minute=0,
             timezone=timezone,
             id="daily_backup",
+            replace_existing=True,
+        )
+
+    if code_quality_report_config.enabled:
+        scheduler.add_job(
+            run_daily_code_quality_report,
+            "cron",
+            hour=code_quality_report_config.hour,
+            minute=code_quality_report_config.minute,
+            timezone=timezone,
+            id="daily_code_quality_report",
             replace_existing=True,
         )
 

@@ -69,6 +69,25 @@ retention_days = 7
 # Local directory for backup_YYYYMMDD_HHMMSS.tar.gz archives
 backup_dir = "/tmp/casino_backups"
 
+[code_quality_report]
+# Enable daily runtime-log/OpenCode quality report sent to reports.admin_id.
+# Disabled by default so production does not start new automation accidentally.
+enabled = false
+# Schedule in reports.timezone.
+hour = 9
+minute = 0
+# Docker container to inspect with `docker logs`; validated before startup.
+container_name = "python-runner"
+# Private artifact directory (created 0700, report files 0600).
+output_dir = "/tmp/casino_code_quality"
+docker_tail_lines = 1000
+max_log_bytes = 256000
+max_artifact_bytes = 512000
+request_logs_max_patterns = 20
+request_logs_max_pattern_length = 200
+request_logs_max_matches = 200
+opencode_timeout_seconds = 120
+
 [ai]
 provider = "mock"
 api_key = "dummy"
