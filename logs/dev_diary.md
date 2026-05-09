@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-05-09: TASK-017 Daily Code Quality Report implementation
+
+**Decision**: Добавлен opt-in `CodeQualityReportService`: по расписанию он выгружает Docker-логи контейнера за configurable `log_since`/`log_until`, фильтрует строки Python-regex `grep_pattern`, редактирует секреты, запускает `opencode run`, поддерживает один повторный проход после `REQUEST_LOGS: <since> <until>`, сохраняет приватные артефакты и отправляет админу Telegram `send_message` чанками до 4096 символов.
+
+**Reasoning**: Отчёт должен быть безопасным для production: без `shell=True`, без shell grep, с валидацией имени контейнера, лимитами байтов/таймаутов и graceful fallback при недоступных Docker/OpenCode/Telegram. Сырые логи в fallback редактируются и усечены, чтобы админ всё равно получил диагностический контекст.
+
+**Alternatives considered**: Использовать shell pipeline `docker logs | grep` — отклонено из-за injection-risk и требования `no shell=True`. Отправлять только файл-артефакт — отклонено, потому что контракт TASK-017 требует `send_message` и соблюдение лимита Telegram.
+
+**Trade-offs**: OpenCode получает контекст как аргумент `opencode run`, а не через `--file`, чтобы не зависеть от конкретной версии CLI; локальные артефакты всё равно сохраняются с mode `0600`. Довыгрузка ограничена одним вторым проходом, чтобы исключить циклы запросов логов.
+
+**Result**: `TASK-017` переведена в `READY_TO_MERGE`. Добавлены конфиг `[code_quality_report]`, scheduler job, unit-тесты для since/until/filter, REQUEST_LOGS second pass, fallback raw logs, Telegram chunking и defaults. Валидация зелёная: `./scripts/test.sh`, `./scripts/lint.sh`.
+
+**References**: TASK-017, `docs/specs/TASK-017_DAILY_CODE_QUALITY_REPORT.md`, `bot/services/code_quality_report.py`, `bot/__main__.py`, `settings.example.toml`, `tests/unit/test_code_quality_report_service.py`.
+
+---
+
 ## 2026-05-09: TASK-015 Automated Daily Backups
 
 **Decision**: Добавлен `BackupService`, который ежедневно создаёт `backup_YYYYMMDD_HHMMSS.tar.gz` в `/tmp/casino_backups`, включает snapshot SQLite БД, `settings.toml` и `groups.json`, отправляет архив админу через Telegram и ротирует старые архивы по configured retention.

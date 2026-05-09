@@ -125,15 +125,24 @@ class TestCodeQualityReportConfig:
     def test_validate_empty_dict_uses_safe_defaults(self) -> None:
         cfg = CodeQualityReportConfig.model_validate({})
         assert cfg.enabled is False
-        assert cfg.hour == 9
-        assert cfg.minute == 0
+        assert cfg.hour == 0
+        assert cfg.minute == 30
+        assert cfg.log_since == "24h"
+        assert cfg.log_until == "now"
+        assert cfg.grep_pattern == "(warning|error|Error|Exception)"
         assert cfg.container_name == "python-runner"
         assert cfg.output_dir == "/tmp/casino_code_quality"
         assert cfg.opencode_timeout_seconds == 120
+        assert cfg.max_extra_log_requests == 3
+        assert cfg.max_extra_log_bytes == 102400
 
     def test_container_name_validation_rejects_shell_metacharacters(self) -> None:
         with pytest.raises(ValueError):
             CodeQualityReportConfig.model_validate({"container_name": "python-runner; rm -rf /"})
+
+    def test_grep_pattern_validation_rejects_invalid_regex(self) -> None:
+        with pytest.raises(ValueError):
+            CodeQualityReportConfig.model_validate({"grep_pattern": "("})
 
     def test_get_config_returns_defaults_when_section_missing(self) -> None:
         with patch("bot.config_reader.parse_config_file") as parse:

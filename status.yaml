@@ -88,7 +88,7 @@ tasks:
     priority: HIGH
   - id: TASK-017
     name: "Daily code quality report (lint export + OpenCode CLI + admin report)"
-    status: SPEC_READY
+    status: READY_TO_MERGE
     spec: docs/specs/TASK-017_DAILY_CODE_QUALITY_REPORT.md
     assignee: cursor-agent
     priority: MEDIUM

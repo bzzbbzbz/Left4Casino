@@ -79,17 +79,19 @@ class CodeQualityReportConfig(BaseModel):
     """Daily code-quality report configuration from [code_quality_report]."""
 
     enabled: bool = False
-    hour: int = Field(default=9, ge=0, le=23)
-    minute: int = Field(default=0, ge=0, le=59)
+    hour: int = Field(default=0, ge=0, le=23)
+    minute: int = Field(default=30, ge=0, le=59)
+    log_since: str = "24h"
+    log_until: str = "now"
+    grep_pattern: str = "(warning|error|Error|Exception)"
     container_name: str = "python-runner"
     output_dir: str = "/tmp/casino_code_quality"
     docker_tail_lines: int = Field(default=1000, ge=1, le=10000)
     max_log_bytes: int = Field(default=256_000, ge=1024, le=5_000_000)
     max_artifact_bytes: int = Field(default=512_000, ge=4096, le=10_000_000)
-    request_logs_max_patterns: int = Field(default=20, ge=0, le=100)
-    request_logs_max_pattern_length: int = Field(default=200, ge=1, le=1000)
-    request_logs_max_matches: int = Field(default=200, ge=1, le=5000)
     opencode_timeout_seconds: int = Field(default=120, ge=5, le=1800)
+    max_extra_log_requests: int = Field(default=3, ge=0, le=20)
+    max_extra_log_bytes: int = Field(default=102_400, ge=1024, le=5_000_000)
 
     @field_validator("container_name")
     @classmethod
@@ -98,6 +100,17 @@ class CodeQualityReportConfig(BaseModel):
 
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
             raise ValueError("container_name must be a valid Docker container name")
+        return value
+
+    @field_validator("grep_pattern")
+    @classmethod
+    def validate_grep_pattern(cls, value: str) -> str:
+        import re
+
+        try:
+            re.compile(value)
+        except re.error as error:
+            raise ValueError(f"grep_pattern must be a valid Python regex: {error}") from error
         return value
 
 

@@ -3,7 +3,7 @@
 **ID**: TASK-017  
 **Title**: Выгрузка логов Docker за заданный интервал (ошибки/предупреждения), анализ через OpenCode CLI с возможностью довыгрузки логов, отчёт администратору  
 **Priority**: MEDIUM  
-**Status**: SPEC_READY  
+**Status**: READY_TO_MERGE  
 **Created**: 2026-02-23  
 **Assignee**: cursor-agent
 

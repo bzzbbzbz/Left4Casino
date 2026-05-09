@@ -74,8 +74,13 @@ backup_dir = "/tmp/casino_backups"
 # Disabled by default so production does not start new automation accidentally.
 enabled = false
 # Schedule in reports.timezone.
-hour = 9
-minute = 0
+hour = 0
+minute = 30
+# Docker log window: ISO 8601, "now", or relative values like "24h" / "30m".
+log_since = "24h"
+log_until = "now"
+# Python regex applied after docker logs collection (no shell grep is used).
+grep_pattern = "(warning|error|Error|Exception)"
 # Docker container to inspect with `docker logs`; validated before startup.
 container_name = "python-runner"
 # Private artifact directory (created 0700, report files 0600).
@@ -83,10 +88,9 @@ output_dir = "/tmp/casino_code_quality"
 docker_tail_lines = 1000
 max_log_bytes = 256000
 max_artifact_bytes = 512000
-request_logs_max_patterns = 20
-request_logs_max_pattern_length = 200
-request_logs_max_matches = 200
 opencode_timeout_seconds = 120
+max_extra_log_requests = 3
+max_extra_log_bytes = 102400
 
 [ai]
 provider = "mock"
