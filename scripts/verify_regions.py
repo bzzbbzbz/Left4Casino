@@ -53,6 +53,8 @@ def main() -> int:
     # Assume run from python-runner
     repo_root = Path(__file__).resolve().parent.parent
     bot_root = repo_root / "telegram-casino-bot" / "bot"
+    if not bot_root.is_dir():
+        bot_root = repo_root / "bot"
     docs_specs = repo_root / "docs" / "specs"
 
     if not bot_root.is_dir():
