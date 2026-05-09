@@ -1,5 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
+from os import getenv
+from pathlib import Path
 
 import pytz
 import structlog
@@ -13,6 +15,7 @@ from structlog.typing import FilteringBoundLogger
 
 from bot.config_reader import (
     AIConfig,
+    BackupsConfig,
     BotConfig,
     ChatRestrictionsConfig,
     DiceFightsConfig,
@@ -36,6 +39,7 @@ from bot.middlewares.tracker import GroupTrackerMiddleware
 from bot.repositories import RepositoryFactory
 from bot.services.ai import AIClient
 from bot.services.backfill import backfill_usernames
+from bot.services.backup import BackupService
 from bot.services.daily_stats import DailyStatsService
 from bot.services.happy_moment import HappyMomentService, HappyMomentTier
 from bot.services.heist import HeistService
@@ -82,6 +86,7 @@ async def main():
     )
     ai_config = get_config(model=AIConfig, root_key="ai")
     reports_config = get_config(model=ReportsConfig, root_key="reports")
+    backups_config = get_config(model=BackupsConfig, root_key="backups", required=False)
 
     dice_fights_config = get_config(model=DiceFightsConfig, root_key="dice_fights", required=False)
     happy_moment_config = get_config(
@@ -174,6 +179,19 @@ async def main():
     scheduler = AsyncIOScheduler()
     daily_stats_service = DailyStatsService(db, bot)
     timezone = pytz.timezone(reports_config.timezone)
+    project_root = Path(__file__).resolve().parents[1]
+    config_file_path = getenv("CONFIG_FILE_PATH")
+    settings_path = Path(config_file_path) if config_file_path else project_root / "settings.toml"
+    backup_service = BackupService(
+        db_path=db.db_path,
+        settings_path=settings_path,
+        groups_path=project_root / "groups.json",
+        backup_dir=backups_config.backup_dir,
+        retention_days=backups_config.retention_days,
+        bot=bot,
+        admin_id=reports_config.admin_id,
+        timezone_str=reports_config.timezone,
+    )
 
     async def send_daily_reports():
         # Send to all allowed chats
@@ -195,8 +213,22 @@ async def main():
             target_user_id, is_dry_run=True, use_today=True
         )
 
+    async def run_daily_backup():
+        await backup_service.run_backup()
+
     # Schedule daily report at 00:00 UTC+5
     scheduler.add_job(send_daily_reports, "cron", hour=0, minute=0, timezone=timezone)
+
+    if backups_config.enabled:
+        scheduler.add_job(
+            run_daily_backup,
+            "cron",
+            hour=0,
+            minute=0,
+            timezone=timezone,
+            id="daily_backup",
+            replace_existing=True,
+        )
 
     # Schedule draft report at 23:30 UTC+5
     scheduler.add_job(send_draft_report, "cron", hour=20, minute=19, timezone=timezone)

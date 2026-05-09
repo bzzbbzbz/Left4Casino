@@ -34,6 +34,14 @@ class GameConfig(BaseModel):
         return v
 
 
+class BackupsConfig(BaseModel):
+    """Automated backup configuration from settings.toml [backups]."""
+
+    enabled: bool = Field(default=True)
+    retention_days: int = Field(default=7, ge=1)
+    backup_dir: str = Field(default="/tmp/casino_backups")
+
+
 class HeistConfig(BaseModel):
     """Heist configuration from settings.toml [heist]."""
 

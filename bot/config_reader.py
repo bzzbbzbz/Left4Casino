@@ -69,6 +69,12 @@ class ReportsConfig(BaseModel):
     admin_id: int = 0
 
 
+class BackupsConfig(BaseModel):
+    enabled: bool = True
+    retention_days: int = Field(default=7, ge=1)
+    backup_dir: str = "/tmp/casino_backups"
+
+
 class AIConfig(BaseModel):
     provider: str = "mock"
     api_key: str = "dummy"

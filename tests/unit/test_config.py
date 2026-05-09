@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bot.config_reader import GameConfig, get_config
+from bot.config_reader import BackupsConfig, GameConfig, get_config
 from bot.middlewares.throttling import ThrottlingMiddleware
 
 pytestmark = pytest.mark.unit
@@ -87,5 +87,33 @@ class TestGetConfigGameConfig:
                     cfg.throttle_time_other,
                     cfg.throttle_time_top,
                 )
+            finally:
+                get_config.cache_clear()
+
+
+class TestBackupsConfig:
+    """BackupsConfig must provide safe defaults for optional [backups] section."""
+
+    def test_validate_empty_dict_uses_defaults(self) -> None:
+        cfg = BackupsConfig.model_validate({})
+        assert cfg.enabled is True
+        assert cfg.retention_days == 7
+        assert cfg.backup_dir == "/tmp/casino_backups"
+
+    def test_validate_partial_dict_merges_with_defaults(self) -> None:
+        cfg = BackupsConfig.model_validate({"enabled": False})
+        assert cfg.enabled is False
+        assert cfg.retention_days == 7
+        assert cfg.backup_dir == "/tmp/casino_backups"
+
+    def test_get_config_backups_returns_defaults_when_section_missing(self) -> None:
+        with patch("bot.config_reader.parse_config_file") as parse:
+            parse.return_value = {}
+            get_config.cache_clear()
+            try:
+                cfg = get_config(model=BackupsConfig, root_key="backups", required=False)
+                assert cfg.enabled is True
+                assert cfg.retention_days == 7
+                assert cfg.backup_dir == "/tmp/casino_backups"
             finally:
                 get_config.cache_clear()

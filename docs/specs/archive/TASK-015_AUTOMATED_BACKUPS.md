@@ -3,7 +3,7 @@
 **ID**: TASK-015  
 **Title**: Автоматическое создание и отправка бэкапов в Telegram  
 **Priority**: HIGH  
-**Status**: SPEC_READY  
+**Status**: DONE  
 **Created**: 2026-02-16  
 **Assignee**: cursor-agent
 
@@ -232,33 +232,33 @@ scheduler.add_job(run_daily_backup, "cron", hour=0, minute=0, timezone=timezone)
 ## ✅ Implementation Checklist
 
 ### Phase 1: Core Backup Service
-- [ ] Создать `bot/services/backup.py`
-- [ ] Реализовать `BackupService` класс
-- [ ] Реализовать `create_backup()` — создание tar.gz архива
-- [ ] Реализовать `send_to_admin()` — отправка в Telegram
-- [ ] Реализовать `rotate_old_backups()` — удаление старых бэкапов
-- [ ] Реализовать `run_backup()` — полный workflow
+- [x] Создать `bot/services/backup.py`
+- [x] Реализовать `BackupService` класс
+- [x] Реализовать `create_backup()` — создание tar.gz архива
+- [x] Реализовать `send_to_admin()` — отправка в Telegram
+- [x] Реализовать `rotate_old_backups()` — удаление старых бэкапов
+- [x] Реализовать `run_backup()` — полный workflow
 
 ### Phase 2: Configuration
-- [ ] Добавить `[backups]` секцию в `settings.example.toml`
-- [ ] Добавить Pydantic модель `BackupsConfig` в `bot/models/config.py`
-- [ ] Обновить `bot/config_reader.py` для чтения `[backups]`
+- [x] Добавить `[backups]` секцию в `settings.example.toml`
+- [x] Добавить Pydantic модель `BackupsConfig` в `bot/models/config.py`
+- [x] Обновить `bot/config_reader.py` для чтения `[backups]`
 
 ### Phase 3: Scheduler Integration
-- [ ] Добавить `run_daily_backup()` в `bot/__main__.py`
-- [ ] Зарегистрировать job в scheduler (00:00)
-- [ ] Передать `backup_service` в контекст
+- [x] Добавить `run_daily_backup()` в `bot/__main__.py`
+- [x] Зарегистрировать job в scheduler (00:00)
+- [x] Передать `backup_service` в контекст
 
 ### Phase 4: Error Handling
-- [ ] Добавить try/except для каждого файла при архивации
-- [ ] Логировать ошибки через structlog
-- [ ] Graceful degradation: если один файл недоступен, продолжить с остальными
+- [x] Добавить try/except для каждого файла при архивации
+- [x] Логировать ошибки через structlog
+- [x] Graceful degradation: если один файл недоступен, продолжить с остальными
 
 ### Phase 5: Testing
-- [ ] Unit-тест: создание архива с mock-файлами
-- [ ] Unit-тест: ротация старых бэкапов
-- [ ] Integration-тест: отправка в Telegram (mock bot)
-- [ ] Manual test: проверить реальную отправку админу
+- [x] Unit-тест: создание архива с mock-файлами
+- [x] Unit-тест: ротация старых бэкапов
+- [x] Integration-тест: отправка в Telegram (mock bot)
+- [ ] Manual test: проверить реальную отправку админу (не выполнялся без обращения к production runtime)
 
 ---
 

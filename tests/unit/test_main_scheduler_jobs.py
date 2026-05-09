@@ -1,6 +1,7 @@
 """Unit tests for scheduler job registration in bot main."""
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -39,6 +40,11 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs() -> None:
         "chat_restrictions": SimpleNamespace(allowed_chat_ids=[-100100], block_private_chats=False),
         "ai": SimpleNamespace(api_key="test-key", provider="mock", model="gpt-4o-mini"),
         "reports": SimpleNamespace(timezone="UTC", admin_id=1),
+        "backups": SimpleNamespace(
+            enabled=True,
+            retention_days=7,
+            backup_dir="/tmp/casino_backups",
+        ),
         "dice_fights": SimpleNamespace(challenge_timeout_minutes=5, roll_timeout_minutes=5),
         "happy_moment": SimpleNamespace(
             enabled=True,
@@ -99,6 +105,8 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs() -> None:
 
     logger_mock = MagicMock()
     logger_mock.ainfo = AsyncMock(return_value=None)
+    backup_service_mock = MagicMock()
+    backup_service_mock.run_backup = AsyncMock()
 
     with patch.object(bot_main, "get_config", side_effect=_fake_get_config):
         with patch.object(bot_main, "Database", return_value=db_mock):
@@ -124,7 +132,15 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs() -> None:
                                                     "get_logger",
                                                     return_value=logger_mock,
                                                 ):
-                                                    await bot_main.main()
+                                                    with patch.object(
+                                                        bot_main,
+                                                        "BackupService",
+                                                        return_value=backup_service_mock,
+                                                    ) as backup_cls:
+                                                        with patch.object(
+                                                            bot_main, "getenv", return_value=None
+                                                        ):
+                                                            await bot_main.main()
 
     job_names = []
     for call in scheduler_mock.add_job.call_args_list:
@@ -135,6 +151,11 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs() -> None:
     assert "check_duel_timeouts" in job_names
     assert "generate_happy_moment_schedule" in job_names
     assert "generate_heist_schedule" in job_names
+    assert "run_daily_backup" in job_names
     assert "start_happy_moment" in job_names
     assert "start_heist" in job_names
     assert scheduler_mock.start.called
+    backup_cls.assert_called_once()
+    backup_kwargs = backup_cls.call_args.kwargs
+    expected_settings_path = Path(bot_main.__file__).resolve().parents[1] / "settings.toml"
+    assert backup_kwargs["settings_path"] == expected_settings_path

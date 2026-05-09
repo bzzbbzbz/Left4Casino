@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-05-09: TASK-015 Automated Daily Backups
+
+**Decision**: Добавлен `BackupService`, который ежедневно создаёт `backup_YYYYMMDD_HHMMSS.tar.gz` в `/tmp/casino_backups`, включает snapshot SQLite БД, `settings.toml` и `groups.json`, отправляет архив админу через Telegram и ротирует старые архивы по configured retention.
+
+**Reasoning**: Для disaster recovery нужен автоматический backup, который не зависит от git и не требует ручного копирования перед каждым изменением. Для SQLite выбран Python Online Backup API вместо raw-copy: он даёт согласованный snapshot даже при работающем процессе.
+
+**Alternatives considered**: Использовать `sqlite3` CLI `.backup` — отклонено как обязательная runtime-зависимость; CLI может отсутствовать на сервере. Raw file copy — оставлен только как emergency fallback вне сервиса, но не как штатная реализация.
+
+**Trade-offs**: Архив может содержать чувствительный `settings.toml`, поэтому отправляется только `reports.admin_id`; если `admin_id = 0`, backup остаётся локально. Ошибки отдельных файлов не роняют бота: файл пропускается, статус отражается в caption/logs.
+
+**Result**: `TASK-015` завершена. Добавлены конфиг `[backups]`, scheduler job `daily_backup`, unit-тесты архивации/отправки/ротации и проверка регистрации scheduler job.
+
+**References**: TASK-015, `docs/specs/archive/TASK-015_AUTOMATED_BACKUPS.md`, `bot/services/backup.py`, `bot/__main__.py`, `settings.example.toml`, `tests/unit/test_backup_service.py`.
+
+---
+
 ## 2026-05-09: TASK-018 archived with current Docker/stage reality
 
 **Decision**: `TASK-018` завершена как процессная задача: runbook сохранён как основной регламент stage/prod, но явно уточняет фактическую схему сервера — live production остаётся Docker-контейнером `python-runner` в `/root/n8n-install/python-runner`, staging работает через `left4casino-stage.service`, а `/opt/left4casino/python-runner-prod` является подготовленным worktree, не live runtime.

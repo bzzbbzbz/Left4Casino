@@ -61,6 +61,14 @@ timezone = "Asia/Yekaterinburg"
 # User ID to send draft reports to (optional)
 admin_id = 123456789
 
+[backups]
+# Enable automated daily backup at 00:00 in reports.timezone
+enabled = true
+# Number of local backup archives to keep
+retention_days = 7
+# Local directory for backup_YYYYMMDD_HHMMSS.tar.gz archives
+backup_dir = "/tmp/casino_backups"
+
 [ai]
 provider = "mock"
 api_key = "dummy"
