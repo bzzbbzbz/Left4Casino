@@ -212,6 +212,25 @@
     docker-compose up --profile "all" -d
     ```
 
+## Безопасная схема разработки: staging + production
+
+Рекомендуемый процесс для изменений:
+
+1. Держите **две отдельные рабочие копии** через `git worktree`:
+   - `python-runner-prod` — только стабильная ветка `master`/`main`;
+   - `python-runner-stage` — ветка для разработки и тестирования.
+2. Используйте **двух разных Telegram-ботов**:
+   - production bot token;
+   - staging bot token.
+3. Используйте **разные локальные конфиги** и **разные БД**:
+   - `settings.prod.toml` + `CASINO_DB_PATH=/.../casino.prod.db`
+   - `settings.stage.toml` + `CASINO_DB_PATH=/.../casino.stage.db`
+4. Ограничьте staging через `allowed_chat_ids` только тестовыми группами.
+5. В production переносите код только через GitHub flow:
+   - `feature/*` -> Pull Request -> CI (`lint` + `tests`) -> merge -> deploy.
+
+Подробный runbook: [`docs/STAGING_PROD_RUNBOOK.md`](docs/STAGING_PROD_RUNBOOK.md)
+
 ## Благодарности
 
 *   [MasterGroosha](https://github.com/MasterGroosha) — автор оригинального бота.

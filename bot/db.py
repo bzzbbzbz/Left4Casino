@@ -1,4 +1,5 @@
 import json
+from os import getenv
 from pathlib import Path
 
 import aiosqlite
@@ -9,11 +10,15 @@ from bot.utils.context import add_db_action
 
 
 class Database:
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str | None = None):
+        env_db_path = getenv("CASINO_DB_PATH")
         if db_path is None:
-            self.db_path = str(Path(__file__).parent / "casino.db")
+            self.db_path = env_db_path or str(Path(__file__).parent / "casino.db")
         else:
             self.db_path = db_path
+
+        if self.db_path != ":memory:":
+            Path(self.db_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
     async def create_tables(self):
         async with aiosqlite.connect(self.db_path) as db:
@@ -673,6 +678,36 @@ class Database:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
+    async def get_yesterday_total_won(
+        self, chat_id: int, start_time_utc: str, end_time_utc: str
+    ) -> int:
+        """
+        Calculates total winnings for a chat within the given time range.
+        Used by HeistService to calculate base value (B) for heist economy.
+
+        Args:
+            chat_id: Chat ID to filter by
+            start_time_utc: Start time in UTC format (YYYY-MM-DD HH:MM:SS)
+            end_time_utc: End time in UTC format (YYYY-MM-DD HH:MM:SS)
+
+        Returns:
+            Total amount won in the chat during the period (0 if no data)
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT COALESCE(SUM(amount), 0) as total_won
+                FROM event_history
+                WHERE chat_id = ?
+                  AND event_type = 'win'
+                  AND amount > 0
+                  AND created_at BETWEEN ? AND ?
+                """,
+                (chat_id, start_time_utc, end_time_utc),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return int(row[0]) if row else 0
+
     async def get_top_users_in_group(self, chat_id: int, limit: int = 30):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -707,3 +742,154 @@ class Database:
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+
+    # [START SPEC:TASK-014:scheduled-events-persistence]
+    # Методы для работы с расписанием событий (REQ-014-1)
+
+    async def upsert_scheduled_event(
+        self,
+        event_id: str,
+        event_type: str,
+        scheduled_at: str,
+        timezone: str,
+        source_date: str,
+        chat_id: int | None = None,
+        status: str = "scheduled",
+        metadata: str | None = None,
+    ) -> None:
+        """
+        Создаёт или обновляет запланированное событие (идемпотентно).
+
+        Args:
+            event_id: Уникальный ID события
+            event_type: Тип события (happy_moment_start, heist_warning, heist_start)
+            scheduled_at: ISO datetime запланированного времени
+            timezone: Таймзона события
+            source_date: Дата источника в формате YYYY-MM-DD
+            chat_id: ID чата (None для глобальных событий)
+            status: Статус события (scheduled, running, done, expired, cancelled)
+            metadata: JSON метаданные события
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO scheduled_events (
+                    event_id, event_type, chat_id, scheduled_at, timezone,
+                    source_date, status, metadata, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ON CONFLICT(event_id) DO UPDATE SET
+                    event_type = excluded.event_type,
+                    chat_id = excluded.chat_id,
+                    scheduled_at = excluded.scheduled_at,
+                    timezone = excluded.timezone,
+                    source_date = excluded.source_date,
+                    status = excluded.status,
+                    metadata = excluded.metadata,
+                    updated_at = datetime('now')
+                """,
+                (
+                    event_id,
+                    event_type,
+                    chat_id,
+                    scheduled_at,
+                    timezone,
+                    source_date,
+                    status,
+                    metadata,
+                ),
+            )
+            await db.commit()
+
+    async def get_scheduled_events(
+        self,
+        source_date: str | None = None,
+        event_types: list[str] | None = None,
+        statuses: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        Получает запланированные события с фильтрацией.
+
+        Args:
+            source_date: Фильтр по дате источника (YYYY-MM-DD)
+            event_types: Фильтр по типам событий
+            statuses: Фильтр по статусам
+            limit: Максимальное количество записей
+
+        Returns:
+            Список событий в виде словарей
+        """
+        query = """
+            SELECT event_id, event_type, chat_id, scheduled_at, timezone,
+                   source_date, status, metadata, created_at, updated_at
+            FROM scheduled_events
+            WHERE 1=1
+        """
+        params: list = []
+
+        if source_date:
+            query += " AND source_date = ?"
+            params.append(source_date)
+
+        if event_types:
+            placeholders = ",".join("?" * len(event_types))
+            query += f" AND event_type IN ({placeholders})"
+            params.extend(event_types)
+
+        if statuses:
+            placeholders = ",".join("?" * len(statuses))
+            query += f" AND status IN ({placeholders})"
+            params.extend(statuses)
+
+        query += " ORDER BY scheduled_at ASC LIMIT ?"
+        params.append(limit)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def update_event_status(self, event_id: str, status: str) -> None:
+        """
+        Обновляет статус запланированного события.
+
+        Args:
+            event_id: ID события
+            status: Новый статус (scheduled, running, done, expired, cancelled)
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE scheduled_events
+                SET status = ?, updated_at = datetime('now')
+                WHERE event_id = ?
+                """,
+                (status, event_id),
+            )
+            await db.commit()
+
+    async def mark_expired_events(self, before_datetime: str) -> int:
+        """
+        Помечает просроченные события как expired.
+
+        Args:
+            before_datetime: ISO datetime - события до этого времени со статусом scheduled будут помечены expired
+
+        Returns:
+            Количество обновлённых записей
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE scheduled_events
+                SET status = 'expired', updated_at = datetime('now')
+                WHERE status = 'scheduled' AND scheduled_at < ?
+                """,
+                (before_datetime,),
+            )
+            await db.commit()
+            return cursor.rowcount if cursor.rowcount else 0
+
+    # [END SPEC:TASK-014:scheduled-events-persistence]

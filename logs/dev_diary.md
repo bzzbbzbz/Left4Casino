@@ -6,6 +6,60 @@
 
 ---
 
+## 2026-05-09: TASK-018 archived with current Docker/stage reality
+
+**Decision**: `TASK-018` завершена как процессная задача: runbook сохранён как основной регламент stage/prod, но явно уточняет фактическую схему сервера — live production остаётся Docker-контейнером `python-runner` в `/root/n8n-install/python-runner`, staging работает через `left4casino-stage.service`, а `/opt/left4casino/python-runner-prod` является подготовленным worktree, не live runtime.
+
+**Reasoning**: Без этого уточнения существовал риск, что следующий агент воспримет systemd-шаблон production как текущую боевую схему и случайно переведёт production с Docker на systemd. Это противоречит ограничению проекта: production runtime менять только по явному запросу.
+
+**Alternatives considered**: Удалить production systemd template — отклонено, потому что он полезен как будущий шаблон. Оставить runbook без уточнения текущей схемы — отклонено из-за риска ошибочного деплоя.
+
+**Trade-offs**: Runbook теперь содержит и текущий Docker production path, и future systemd worktree template. Это немного увеличивает объём документа, но делает границы безопасными.
+
+**Result**: `TASK-018` переведена в `DONE`, спецификация перемещена в архив, production/staging workflow зафиксирован без изменения live production runtime.
+
+**References**: TASK-018, `docs/specs/archive/TASK-018_SAFE_STAGING_PROD_WORKFLOW.md`, `docs/STAGING_PROD_RUNBOOK.md`, `left4casino-*.example.service`, `env/*.example.env`.
+
+---
+
+## 2026-05-09: TASK-016 switched from scale factor to exact big-int storage
+
+**Decision**: Спецификация `TASK-016` переписана: вместо scale factor с `INTEGER` выбран подход точного хранения денежных значений как `TEXT` в SQLite и `int` в Python. Scale factor отклонён, потому что превращает малые суммы вроде `50` и ставки `1` в ноль при `N = 1_000_000`.
+
+**Reasoning**: Экономика бота должна сохранить текущую семантику очков. Игроки не должны терять малые балансы, ставки и выигрыши ради обхода лимита SQLite `INTEGER`. Python `int` даёт точную арифметику для `10^24+`, а `TEXT` в SQLite убирает overflow без перехода на PostgreSQL.
+
+**Alternatives considered**: SQLite `REAL` — отклонено из-за binary-float погрешностей и потери мелких изменений на больших числах. Chunked integer columns — отклонено как чрезмерное усложнение. PostgreSQL `NUMERIC` — оставлено вне scope текущей стабилизации.
+
+**Trade-offs**: Для `/top` и `/stats` нельзя полагаться на обычную SQL-сортировку `TEXT`; реализация должна сортировать по числовому значению или добавить sort key. Это явно зафиксировано в acceptance criteria.
+
+**Result**: `TASK-016` остаётся `SPEC_READY`, но контракт теперь безопасен для малых сумм и больших балансов.
+
+**References**: TASK-016, `docs/specs/TASK-016_BIGINT_MONEY_STORAGE.md`, `bot/db.py`, `bot/repositories/`, `migrations/README.md`.
+
+---
+
+## 2026-04-15: TASK-018 Safe staging/prod workflow for Telegram bot development
+
+**Decision**: В проект добавлен безопасный контур staging/prod: отдельный runbook `docs/STAGING_PROD_RUNBOOK.md`, шаблоны env-файлов (`env/prod.example.env`, `env/stage.example.env`), отдельные example unit-файлы systemd (`left4casino-prod.example.service`, `left4casino-stage.example.service`), а также поддержка `CASINO_DB_PATH` в `Database` для явной изоляции SQLite между окружениями. Дополнительно `.gitignore` расширен для `settings.*.toml` и `env/*.env`, а README получил краткое описание рекомендованного workflow.
+
+**Reasoning**: Главный риск был в том, что staging и production могли использовать одну рабочую копию, один токен и одну БД SQLite. Это делало тестирование опасным и мешало воспроизводимому деплою. Отдельные worktree + разные конфиги/секреты/БД дают дешёвую, но надёжную изоляцию без перехода на более тяжёлую инфраструктуру.
+
+**Alternatives considered**:
+- Два отдельных git clone вместо `git worktree` — отклонено: выше риск рассинхронизации и лишний расход места.
+- Миграция сразу на PostgreSQL — отклонено как выходящее за рамки задачи.
+- Полное исправление всех pyright-проблем в кодовой базе в рамках этой задачи — отклонено как слишком большой побочный объём; вместо этого включена реальная проверка правильного пути к коду и текущий tech debt оставлен видимым на уровне warning.
+
+**Trade-offs**:
+- Pyright теперь анализирует реальные файлы (`bot`, `main.py`), а не несуществующий путь, но часть предупреждений по aiogram-типам остаётся как warning.
+- В `deploy.yml` исправлены ветки `master/main` и путь к `Dockerfile`, однако удалённый SSH deploy по-прежнему требует ручной сверки серверного `docker compose`-сценария под конкретную инфраструктуру.
+- По ходу валидации исправлена отдельная регрессия `/top`: теперь можно показывать позицию вызывающего вне top-10 без вывода всего списка в сообщение.
+
+**Result**: Есть задокументированный и проверенный workflow разработки через staging-бота и GitHub PR flow. Локальная валидация успешна: `./scripts/test.sh` — 123 passed, `./scripts/lint.sh` — success, pyright завершает проверку без errors.
+
+**References**: TASK-018, `docs/specs/TASK-018_SAFE_STAGING_PROD_WORKFLOW.md`, `docs/STAGING_PROD_RUNBOOK.md`, `env/*.example.env`, `left4casino-*.example.service`, `.github/workflows/*.yml`, `bot/db.py`.
+
+---
+
 ## 2026-02-16: TASK-015 Automated Daily Backups (Spec Created)
 
 **Decision**: Создана спецификация для автоматического ежедневного бэкапа критичных файлов (casino.db, settings.toml, groups.json) в 00:00 с отправкой архива админу в Telegram. Сервис `BackupService` будет создавать tar.gz архивы, отправлять их через `bot.send_document()` на `admin_id` из конфига, и ротировать старые бэкапы (хранить последние 7).

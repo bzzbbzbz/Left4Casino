@@ -1,5 +1,7 @@
 # Python: virtualenv, caches, build artifacts
 venv/
+.venv*/
+venv*/
 .venv/
 __pycache__/
 *.py[cod]
@@ -16,9 +18,17 @@ dist/
 # Local config/secrets (never commit)
 .env
 .env.*
+*.env
+env/*.env
+!env/*.example.env
+.envrc
 groups.json
 settings.toml
+settings.*.toml
+!settings.example.toml
 *.db
+*.db-*
+*.sqlite
 *.sqlite*
 
 # IDE / OS

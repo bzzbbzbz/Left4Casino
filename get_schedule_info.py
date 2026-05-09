@@ -40,7 +40,7 @@ def format_event_type(event_type: str) -> str:
 
 
 async def get_scheduled_events(limit: int, all_days: bool):
-    db_path = Path(__file__).parent / "telegram-casino-bot" / "bot" / "casino.db"
+    db_path = Path(__file__).parent / "bot" / "casino.db"
 
     timezone = pytz.timezone("Asia/Yekaterinburg")
     now = datetime.now(timezone)

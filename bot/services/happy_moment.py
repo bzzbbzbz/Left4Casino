@@ -176,10 +176,13 @@ class HappyMomentService:
 
         return date.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-    def generate_daily_schedule(self) -> list[ScheduledMoment]:
+    async def generate_daily_schedule(self) -> list[ScheduledMoment]:
         """
         Генерирует расписание на текущие сутки.
         Вызывается в 00:00 или при старте бота.
+
+        REQ-014-1: Сохраняет расписание в БД.
+        REQ-014-2: Проверяет наличие существующего расписания перед генерацией.
         """
         if not self.enabled:
             self.schedule = []
@@ -187,13 +190,75 @@ class HappyMomentService:
 
         now = datetime.now(self.timezone)
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        source_date = today.date().isoformat()
 
-        # Если расписание уже сгенерировано на сегодня, не перегенерируем
+        # REQ-014-2: Проверяем наличие существующего расписания в БД
+        existing_events = await self.db.get_scheduled_events(
+            source_date=source_date,
+            event_types=["happy_moment_start"],
+            statuses=["scheduled", "running"],
+        )
+
+        # Если есть валидное расписание на сегодня, восстанавливаем из БД
+        if existing_events:
+            moments = []
+            for event in existing_events:
+                scheduled_at = datetime.fromisoformat(event["scheduled_at"])
+                metadata = json.loads(event["metadata"]) if event["metadata"] else {}
+                tier = HappyMomentTier(
+                    duration_minutes=metadata.get("duration_minutes", 1),
+                    multiplier=metadata.get("multiplier", 1.5),
+                )
+
+                # Восстанавливаем активный миг, если событие running
+                if event["status"] == "running":
+                    end_time = scheduled_at + timedelta(minutes=tier.duration_minutes)
+                    # Проверяем, не истёк ли он
+                    if now < end_time:
+                        self.active_moment = ActiveMoment(
+                            start_time=scheduled_at,
+                            end_time=end_time,
+                            tier=tier,
+                            name=metadata.get("name", "Счастливый миг"),
+                        )
+                        logger.info(
+                            "Restored active happy moment from DB",
+                            name=self.active_moment.name,
+                            multiplier=tier.multiplier,
+                            remaining_minutes=int((end_time - now).total_seconds() / 60),
+                        )
+                    else:
+                        # Миг истёк, обновляем статус
+                        await self.db.update_event_status(event["event_id"], "done")
+
+                # Добавляем будущие события в расписание
+                if scheduled_at > now:
+                    moments.append(
+                        ScheduledMoment(
+                            scheduled_time=scheduled_at,
+                            tier=tier,
+                            name=metadata.get("name", "Счастливый миг"),
+                        )
+                    )
+
+            self.schedule = moments
+            self._schedule_date = today
+
+            logger.info(
+                "Loaded happy moment schedule from DB",
+                count=len(moments),
+                times=[m.scheduled_time.strftime("%H:%M") for m in moments],
+            )
+
+            return moments
+
+        # Если расписание уже сгенерировано на сегодня в памяти, не перегенерируем
         if self._schedule_date and self._schedule_date.date() == today.date():
             # Фильтруем только будущие события
             self.schedule = [m for m in self.schedule if m.scheduled_time > now]
             return self.schedule
 
+        # Генерируем новое расписание
         scheduled_times: list[datetime] = []
         moments: list[ScheduledMoment] = []
 
@@ -242,6 +307,27 @@ class HappyMomentService:
         self.schedule = moments
         self._schedule_date = today
 
+        # REQ-014-1: Сохраняем расписание в БД
+        for moment in moments:
+            event_id = f"happy_moment_{moment.scheduled_time.isoformat()}"
+            metadata = json.dumps(
+                {
+                    "name": moment.name,
+                    "duration_minutes": moment.tier.duration_minutes,
+                    "multiplier": moment.tier.multiplier,
+                }
+            )
+
+            await self.db.upsert_scheduled_event(
+                event_id=event_id,
+                event_type="happy_moment_start",
+                scheduled_at=moment.scheduled_time.isoformat(),
+                timezone=str(self.timezone),
+                source_date=source_date,
+                status="scheduled",
+                metadata=metadata,
+            )
+
         logger.info(
             "Generated happy moment schedule",
             count=len(moments),
@@ -251,7 +337,10 @@ class HappyMomentService:
         return moments
 
     async def start_moment(self, moment: ScheduledMoment):
-        """Запускает счастливый миг"""
+        """
+        Запускает счастливый миг.
+        REQ-014-4: Обновляет статус события в БД.
+        """
         if not self.enabled:
             return
 
@@ -265,8 +354,12 @@ class HappyMomentService:
             name=moment.name,
         )
 
+        # REQ-014-4: Обновляем статус в БД
+        event_id = f"happy_moment_{moment.scheduled_time.isoformat()}"
+        await self.db.update_event_status(event_id, "running")
+
         # Логируем событие старта
-        event_id = str(uuid.uuid4())
+        history_event_id = str(uuid.uuid4())
         metadata = json.dumps(
             {
                 "name": moment.name,
@@ -275,7 +368,7 @@ class HappyMomentService:
             }
         )
         await self.db.add_event(
-            event_id, 0, "happy_moment_start", int(moment.tier.multiplier), metadata
+            history_event_id, 0, "happy_moment_start", int(moment.tier.multiplier), metadata
         )
 
         logger.info(
@@ -289,8 +382,15 @@ class HappyMomentService:
         await self._send_start_notification(moment)
 
     async def end_moment(self):
-        """Завершает текущий счастливый миг"""
+        """
+        Завершает текущий счастливый миг.
+        REQ-014-4: Обновляет статус события в БД.
+        """
         if self.active_moment:
+            # REQ-014-4: Обновляем статус в БД
+            event_id = f"happy_moment_{self.active_moment.start_time.isoformat()}"
+            await self.db.update_event_status(event_id, "done")
+
             logger.info(
                 "Happy moment ended",
                 name=self.active_moment.name,

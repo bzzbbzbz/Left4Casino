@@ -1,0 +1,15 @@
+[Unit]
+Description=Left4Casino Telegram Bot (staging)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/left4casino/python-runner-stage
+EnvironmentFile=/opt/left4casino/python-runner-stage/env/stage.env
+ExecStart=/opt/left4casino/python-runner-stage/.venv/bin/python /opt/left4casino/python-runner-stage/main.py
+KillMode=process
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

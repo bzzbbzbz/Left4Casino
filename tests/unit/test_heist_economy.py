@@ -145,6 +145,7 @@ class TestHeistServiceIntegration:
         mock_bot = MagicMock()
         mock_db = MagicMock()
         mock_db.get_yesterday_total_won = AsyncMock(return_value=10000)
+        mock_db.update_event_status = AsyncMock()
         service = HeistService(
             bot=mock_bot,
             db=mock_db,
@@ -170,6 +171,7 @@ class TestHeistServiceIntegration:
         mock_bot = MagicMock()
         mock_db = MagicMock()
         mock_db.get_yesterday_total_won = AsyncMock(return_value=100)
+        mock_db.update_event_status = AsyncMock()
         service = HeistService(
             bot=mock_bot,
             db=mock_db,

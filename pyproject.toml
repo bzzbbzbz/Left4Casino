@@ -74,14 +74,18 @@ reportArgumentType = "warning"
 reportAttributeAccessIssue = "warning"
 reportAssignmentType = "warning"
 reportOperatorIssue = "warning"
+reportCallIssue = "warning"
 reportMissingModuleSource = "warning"
-include = ["telegram-casino-bot/bot", "main.py"]
+reportOptionalMemberAccess = "warning"
+reportOptionalSubscript = "warning"
+reportReturnType = "warning"
+include = ["bot", "main.py"]
 exclude = ["**/__pycache__", "venv", ".venv"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = ["telegram-casino-bot"]
+pythonpath = ["."]
 markers = [
     "unit: Fast unit tests without external dependencies",
     "integration: Integration tests with database and bot",

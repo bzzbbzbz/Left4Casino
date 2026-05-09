@@ -1,0 +1,15 @@
+[Unit]
+Description=Left4Casino Telegram Bot (production)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/left4casino/python-runner-prod
+EnvironmentFile=/opt/left4casino/python-runner-prod/env/prod.env
+ExecStart=/opt/left4casino/python-runner-prod/.venv/bin/python /opt/left4casino/python-runner-prod/main.py
+KillMode=process
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

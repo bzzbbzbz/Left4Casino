@@ -77,6 +77,7 @@ async def test_heist_end_with_winner_pays_out_and_logs_commission() -> None:
     mock_db = MagicMock()
     mock_db.add_event = AsyncMock()
     mock_db.update_balance = AsyncMock()
+    mock_db.update_event_status = AsyncMock()
     service = HeistService(
         bot=mock_bot,
         db=mock_db,
@@ -115,6 +116,7 @@ async def test_happy_moment_start_sets_multiplier_and_notifies_chats() -> None:
     mock_bot.send_message = AsyncMock()
     mock_db = MagicMock()
     mock_db.add_event = AsyncMock()
+    mock_db.update_event_status = AsyncMock()
     service = HappyMomentService(
         bot=mock_bot,
         db=mock_db,
