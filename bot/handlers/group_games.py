@@ -14,6 +14,8 @@ from bot.config_reader import GameConfig
 from bot.db import Database
 from bot.dice_check import get_score_change, get_super_jackpot
 from bot.models.events import create_event
+from bot.services.happy_moment import HappyMomentService
+from bot.services.heist import HeistService
 from bot.utils.formatters import format_number
 
 router = Router()
@@ -90,22 +92,48 @@ async def cmd_stats(message: Message, db: Database):
     await message.reply(text)
 
 
-def _build_top_text(top_users: list[dict], caller_id: int, chat_title: str) -> str:
+def _build_top_text(
+    top_users: list[dict], caller_id: int, chat_title: str, max_display: int = 10
+) -> str:
     if not top_users:
         return "В этом чате пока нет активных игроков."
 
     chat_title_safe = html.escape(chat_title)
-    top10 = top_users[:10]
     lines = [f"🏆 <b>Топ игроков чата {chat_title_safe}:</b>\n"]
+    displayed_users = top_users[:max_display]
 
-    for idx, user in enumerate(top10, start=1):
+    for idx, user in enumerate(displayed_users, start=1):
         nickname = user["nickname"] or "Безымянный"
         balance = user["balance"]
+        games = user.get("games_played", 0)
+        won = user.get("total_won", 0)
+        lost = user.get("total_lost", 0)
+        bankruptcy = user.get("bankruptcy_count", 0)
+
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, "")
         place = f"{idx}. {medal}" if medal else f"{idx}."
+
+        # Основная строка с именем и балансом
         lines.append(
             f"{place} <b>{html.escape(str(nickname))}</b> — {format_number(balance)} очков"
         )
+
+        # Детальная статистика (если есть игры)
+        if games > 0:
+            # Расчет winrate
+            wr = (won / (won + lost) * 100) if (won + lost) > 0 else 0.0
+
+            lines.append(f"      🎰 Всего игр: {format_number(games)}")
+            lines.append(
+                f"      📈 Выиграно очков: {format_number(won)} | "
+                f"Потрачено: {format_number(lost)} | "
+                f"WR: {wr:.2f}%"
+            )
+            lines.append(f"      💀 Банкротств: {format_number(bankruptcy)}")
+
+        # Пустая строка между игроками (кроме последнего)
+        if idx < len(displayed_users):
+            lines.append("")
 
     caller_rank = next(
         (idx for idx, user in enumerate(top_users, start=1) if user["user_id"] == caller_id), None
@@ -114,7 +142,7 @@ def _build_top_text(top_users: list[dict], caller_id: int, chat_title: str) -> s
         caller_user = top_users[caller_rank - 1]
         caller_name = html.escape(str(caller_user["nickname"] or "Безымянный"))
         caller_balance = format_number(caller_user["balance"])
-        lines.append(f"\n👤 Ты: {caller_rank}. <b>{caller_name}</b> — {caller_balance} очков")
+        lines.append(f"👤 Ты: {caller_rank}. <b>{caller_name}</b> — {caller_balance} очков")
 
     return "\n".join(lines)
 
@@ -135,7 +163,13 @@ async def cmd_top(message: Message, db: Database):
 
 # Обработчик броска кубика
 @router.message(F.content_type == ContentType.DICE, F.dice.emoji == DiceEmoji.SLOT_MACHINE)
-async def on_dice_roll(message: Message, db: Database, game_config: GameConfig):
+async def on_dice_roll(
+    message: Message,
+    db: Database,
+    game_config: GameConfig,
+    happy_moment_service: HappyMomentService,
+    heist_service: HeistService,
+):
     # Check if forwarded
     if (
         message.forward_date
@@ -184,7 +218,35 @@ async def on_dice_roll(message: Message, db: Database, game_config: GameConfig):
     if score_change > 0:
         super_multiplier, jackpot_name = get_super_jackpot()
 
-    actual_change = score_change * user_bid * super_multiplier
+    # [START SPEC:HAPPY-MOMENT:apply_multiplier]
+    # REQ: Итоговый выигрыш = базовые_очки × bid × jackpot_multiplier × happy_moment_multiplier
+    # Source: HAPPY_MOMENT_SPEC.md, секция "Взаимодействие с игровой механикой"
+    # CRITICAL: Множитель "счастливого мига" применяется поверх джекпот-множителя
+    happy_multiplier = 1.0
+    happy_info = None
+    if score_change > 0:
+        happy_multiplier = happy_moment_service.get_active_multiplier() or 1.0
+        happy_info = happy_moment_service.get_active_moment_info()
+
+    actual_change = int(score_change * user_bid * super_multiplier * happy_multiplier)
+    # [END SPEC:HAPPY-MOMENT]
+
+    # [START SPEC:HEIST-SPINS:process_spin]
+    # REQ: Только проигрыши идут в банк, выигрыши — игрокам
+    # Source: HEIST_SPEC.md, секция "Механика спинов"
+    # CRITICAL: Метод heist_service.process_spin обновляет состояние ивента
+    heist_info = None
+    if heist_service.is_active(message.chat.id):
+        heist_info = await heist_service.process_spin(
+            chat_id=message.chat.id,
+            user_id=user_id,
+            first_name=message.from_user.first_name,
+            bid=user_bid,
+            dice_value=dice_value,
+            calculated_win=actual_change,
+        )
+    # [END SPEC:HEIST-SPINS]
+
     new_balance = current_balance + actual_change
 
     # Обновляем баланс в БД
@@ -192,12 +254,30 @@ async def on_dice_roll(message: Message, db: Database, game_config: GameConfig):
 
     # Логируем событие (Pydantic model)
     event_type = "win" if actual_change > 0 else "loss"
+    if happy_info and actual_change > 0:
+        event_type = "happy_moment_win"
+
     metadata_dict = {
         "dice_value": dice_value,
         "bid": user_bid,
         "base_score_change": score_change,
         "super_jackpot_multiplier": super_multiplier,
     }
+
+    if happy_info and actual_change > 0:
+        metadata_dict.update(
+            {
+                "happy_moment_multiplier": happy_multiplier,
+                "happy_moment_name": happy_info["name"],
+                "duration_minutes": happy_info["duration_minutes"],
+                "base_win": score_change,  # redundant but follows spec REQ
+            }
+        )
+
+    if heist_info:
+        metadata_dict["during_heist"] = True
+        metadata_dict["heist_pot_after"] = heist_info["pot"]
+
     event = create_event(
         event_type=event_type,
         event_id=str(uuid.uuid4()),
@@ -220,23 +300,36 @@ async def on_dice_roll(message: Message, db: Database, game_config: GameConfig):
 
     # 1. Выигрышная комбинация (score_change > 0)
     if actual_change > 0:
-        if super_multiplier > 1:
-            # Яркие фразы для джекпотов
-            if super_multiplier == 2:
-                header = "🔥 <b>SUPER JACKPOT! Удача улыбнулась вам!</b>"
-            elif super_multiplier == 3:
-                header = "⚡️ <b>MEGA WIN! Невероятное везение!</b>"
-            elif super_multiplier == 5:
-                header = "🚀 <b>COSMIC JACKPOT! Вы сегодня король казино!</b>"
-            else:  # 10
-                header = "👑 <b>LEGENDARY! СУДЬБА ВЫБРАЛА ВАС! ГРАНДИОЗНЫЙ КУШ!</b>"
+        if super_multiplier > 1 or happy_multiplier > 1.0:
+            header_parts = []
+            if super_multiplier > 1:
+                if super_multiplier == 2:
+                    header_parts.append("🔥 <b>SUPER JACKPOT!</b>")
+                elif super_multiplier == 3:
+                    header_parts.append("⚡️ <b>MEGA WIN!</b>")
+                elif super_multiplier == 5:
+                    header_parts.append("🚀 <b>COSMIC JACKPOT!</b>")
+                else:  # 10
+                    header_parts.append("👑 <b>LEGENDARY WIN!</b>")
+
+            if happy_multiplier > 1.0:
+                header_parts.append(f"✨ <b>{happy_info['name']}!</b>")
+
+            header = " + ".join(header_parts)
+
+            # Build multiplier display
+            multiplier_parts = []
+            if super_multiplier > 1:
+                multiplier_parts.append(f"x{super_multiplier}")
+            if happy_multiplier > 1.0:
+                multiplier_parts.append(f"x{happy_multiplier}")
+
+            multiplier_text = " × ".join(multiplier_parts)
 
             msg_text = (
                 f"{header}\n"
-                f"Сработал множитель <b>x{super_multiplier}</b> ({jackpot_name})!\n\n"
-                f"💰 Ваша ставка: {format_number(user_bid)}\n"
-                f"💸 Выигрыш: <b>{format_number(actual_change)}</b> очков! (вместо {format_number(score_change * user_bid)})\n"
-                f"🏦 Ваш баланс: {format_number(new_balance)}"
+                f"Вы выиграли {format_number(user_bid)} {multiplier_text} = <b>{format_number(actual_change)}</b> очков! "
+                f"Ваш баланс: {format_number(new_balance)}"
             )
             await message.reply(msg_text)
         else:

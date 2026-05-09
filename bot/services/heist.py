@@ -164,6 +164,18 @@ class HeistService:
         # Получаем сумму выигрышей
         b_raw = await self.db.get_yesterday_total_won(chat_id, start_utc, end_utc)
 
+        # Защита от аномально больших значений (возможно битые данные в БД)
+        # Разумный максимум: 10 миллионов очков за день
+        max_reasonable_value = 10_000_000
+        if b_raw > max_reasonable_value:
+            logger.warning(
+                "Detected anomalously high b_raw value, capping to max",
+                chat_id=chat_id,
+                b_raw_original=b_raw,
+                b_raw_capped=max_reasonable_value,
+            )
+            b_raw = max_reasonable_value
+
         # Fallback если данных нет
         if b_raw < self.config.base_value_fallback:
             b_raw = self.config.base_value_fallback
@@ -186,11 +198,14 @@ class HeistService:
 
         return b
 
-    def generate_daily_schedule(self) -> datetime | None:
+    async def generate_daily_schedule(self) -> datetime | None:
         """
         Генерирует время запуска на текущие сутки.
         Вызывается в 00:00 или при старте бота.
         Возвращает запланированное время или None если ивент отключен.
+
+        REQ-014-1: Сохраняет расписание в БД.
+        REQ-014-2: Проверяет наличие существующего расписания перед генерацией.
         """
         if not self.config.enabled:
             self.scheduled_time = None
@@ -198,8 +213,36 @@ class HeistService:
 
         now = datetime.now(self.timezone)
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        source_date = today.date().isoformat()
 
-        # Если расписание уже сгенерировано на сегодня, не перегенерируем
+        # REQ-014-2: Проверяем наличие существующего расписания в БД
+        existing_events = await self.db.get_scheduled_events(
+            source_date=source_date,
+            event_types=["heist_start", "heist_warning"],
+            statuses=["scheduled", "running"],
+        )
+
+        # Если есть валидное расписание на сегодня, восстанавливаем из БД
+        heist_start_event = next(
+            (e for e in existing_events if e["event_type"] == "heist_start"), None
+        )
+
+        if heist_start_event:
+            scheduled_time = datetime.fromisoformat(heist_start_event["scheduled_at"])
+
+            # Пропускаем если время уже прошло
+            if scheduled_time > now:
+                self.scheduled_time = scheduled_time
+                self._schedule_date = today
+
+                logger.info(
+                    "Loaded heist schedule from DB",
+                    scheduled_time=scheduled_time.strftime("%H:%M"),
+                )
+
+                return scheduled_time
+
+        # Если расписание уже сгенерировано на сегодня в памяти, не перегенерируем
         if self._schedule_date and self._schedule_date.date() == today.date():
             if self.scheduled_time and self.scheduled_time > now:
                 return self.scheduled_time
@@ -225,6 +268,34 @@ class HeistService:
         self.scheduled_time = random_time
         self._schedule_date = today
 
+        # REQ-014-1: Сохраняем расписание в БД (warning + start)
+        warning_time = random_time - timedelta(minutes=self.config.warning_before_minutes)
+
+        # Сохраняем warning event
+        if warning_time > now:
+            warning_event_id = f"heist_warning_{random_time.date().isoformat()}"
+            await self.db.upsert_scheduled_event(
+                event_id=warning_event_id,
+                event_type="heist_warning",
+                scheduled_at=warning_time.isoformat(),
+                timezone=str(self.timezone),
+                source_date=source_date,
+                status="scheduled",
+                metadata=json.dumps({"heist_start_time": random_time.isoformat()}),
+            )
+
+        # Сохраняем start event
+        start_event_id = f"heist_start_{random_time.date().isoformat()}"
+        await self.db.upsert_scheduled_event(
+            event_id=start_event_id,
+            event_type="heist_start",
+            scheduled_at=random_time.isoformat(),
+            timezone=str(self.timezone),
+            source_date=source_date,
+            status="scheduled",
+            metadata=None,
+        )
+
         logger.info(
             "Generated heist schedule",
             scheduled_time=random_time.strftime("%H:%M"),
@@ -233,9 +304,17 @@ class HeistService:
         return random_time
 
     async def send_warning(self):
-        """Отправляет предупреждение за 10 мин до старта во все чаты"""
+        """
+        Отправляет предупреждение за 10 мин до старта во все чаты.
+        REQ-014-4: Обновляет статус события в БД.
+        """
         if not self.config.enabled:
             return
+
+        # REQ-014-4: Обновляем статус warning события
+        now = datetime.now(self.timezone)
+        warning_event_id = f"heist_warning_{now.date().isoformat()}"
+        await self.db.update_event_status(warning_event_id, "done")
 
         text = (
             "⏰🏦 <b>ВНИМАНИЕ!</b>\n\n"
@@ -254,11 +333,18 @@ class HeistService:
                 )
 
     async def start_heist(self):
-        """Запускает ивент во всех чатах (отдельный банк в каждом)"""
+        """
+        Запускает ивент во всех чатах (отдельный банк в каждом).
+        REQ-014-4: Обновляет статус события в БД.
+        """
         if not self.config.enabled:
             return
 
         now = datetime.now(self.timezone)
+
+        # REQ-014-4: Обновляем статус start события
+        start_event_id = f"heist_start_{now.date().isoformat()}"
+        await self.db.update_event_status(start_event_id, "running")
 
         # Генерируем длительности фаз
         phase1_duration = random.randint(
@@ -280,7 +366,7 @@ class HeistService:
                 # Source: HEIST_SPEC.md, секция "Экономика"
                 # CRITICAL: Множители влияют на длительность ивента и game balance
                 pot_cap = int(b * self.config.pot_cap_pct / 100)
-                seed_pct = random.randint(self.config.seed_min_pct, self.config.seed_max_pct)
+                seed_pct = random.uniform(self.config.seed_min_pct, self.config.seed_max_pct)
                 seed_amount = int(b * seed_pct / 100)
                 # [END SPEC:HEIST-ECONOMY]
 
@@ -320,9 +406,9 @@ class HeistService:
                     "Сейф вскрыт! Крутите слоты — вся добыча идёт в общий котёл!\n"
                     "Последний, кто крутанёт, заберёт ВСЁ! 💰\n\n"
                     "<b>Правила:</b>\n"
-                    "• Каждый спин 🎰 — ваша ставка уходит в банк\n"
-                    "• Выигрыши тоже идут в банк (не вам!)\n"
-                    "• Когда ограбление закончится — последний игрок забирает банк"
+                    "• Проигрыши 🎰 идут в общий банк\n"
+                    "• Выигрыши забираете себе (как обычно)\n"
+                    "• Когда ограбление закончится — последний игрок забирает весь банк!"
                 )
 
                 await self.bot.send_message(chat_id, text)
@@ -363,8 +449,8 @@ class HeistService:
         # Обновляем состояние
         pot_before = state.pot
 
-        # Только проигрыши идут в банк
-        if calculated_win == 0:
+        # Только проигрыши идут в банк (calculated_win < 0 — игрок проиграл)
+        if calculated_win < 0:
             state.pot += bid
 
         pot_after = state.pot
@@ -377,7 +463,7 @@ class HeistService:
         state.participants.add(user_id)
 
         # Логируем вклад только для проигрышей
-        if calculated_win == 0:
+        if calculated_win < 0:
             event_id = str(uuid.uuid4())
             metadata = json.dumps(
                 {
@@ -500,12 +586,20 @@ class HeistService:
     # [END SPEC:HEIST-PHASES]
 
     async def end_heist(self, chat_id: int):
-        """Завершает ивент в чате, определяет победителя"""
+        """
+        Завершает ивент в чате, определяет победителя.
+        REQ-014-4: Обновляет статус события в БД.
+        """
         state = self.active_heists.get(chat_id)
         if not state:
             return
 
         state.phase = "ended"
+
+        # REQ-014-4: Обновляем статус события на done
+        now = datetime.now(self.timezone)
+        start_event_id = f"heist_start_{now.date().isoformat()}"
+        await self.db.update_event_status(start_event_id, "done")
 
         # Если никто не играл
         if not state.last_spinner_id:

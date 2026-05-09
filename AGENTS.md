@@ -77,6 +77,30 @@
 - **status.yaml**: Единственный источник правды о состоянии проекта.
 - **.cursorrules**: Глобальные инструкции для AI (стиль кода, запрещенные приемы).
 
+### Staging / Production Workflow
+
+Для безопасной разработки Telegram-бота используется раздельная схема **stage/prod**.
+
+**Основные документы:**
+- Спецификация: `docs/specs/TASK-018_SAFE_STAGING_PROD_WORKFLOW.md`
+- Runbook: `docs/STAGING_PROD_RUNBOOK.md`
+- Шаблон env для prod: `env/prod.example.env`
+- Шаблон env для stage: `env/stage.example.env`
+- Шаблон systemd для prod: `left4casino-prod.example.service`
+- Шаблон systemd для stage: `left4casino-stage.example.service`
+
+**Текущая фактическая схема на сервере:**
+- **Prod (живой):** `/root/n8n-install/python-runner` → запускается в Docker контейнере `python-runner`
+- **Stage (живой):** `/opt/left4casino/python-runner-stage` → запускается через `left4casino-stage.service`
+- **Prod worktree (подготовлен, но не используется в runtime):** `/opt/left4casino/python-runner-prod`
+
+**Правила для следующих агентов:**
+- не смешивать stage и prod БД;
+- не использовать один и тот же bot token для двух сред;
+- перед изменениями в production делать backup `settings.toml` и `bot/casino.db`;
+- не переводить production с Docker на systemd без явного запроса пользователя;
+- при доработке процесса stage/prod сначала читать `TASK-018` и `docs/STAGING_PROD_RUNBOOK.md`.
+
 ### Semantic Regions
 
 Критичный код (game balance, атомарные транзакции, взаимозачёт долгов) размечен семантическими регионами. Формат и список файлов — в `docs/SEMANTIC_REGIONS_GUIDE.md`.

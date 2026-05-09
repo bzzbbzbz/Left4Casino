@@ -8,8 +8,8 @@ from pathlib import Path
 import aiosqlite
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent
-# Default: telegram-casino-bot/bot/casino.db relative to project root (python-runner)
-_DEFAULT_DB_PATH = MIGRATIONS_DIR.parent / "telegram-casino-bot" / "bot" / "casino.db"
+# Default: bot/casino.db relative to project root (python-runner)
+_DEFAULT_DB_PATH = MIGRATIONS_DIR.parent / "bot" / "casino.db"
 DB_PATH = os.environ.get("CASINO_DB_PATH", str(_DEFAULT_DB_PATH))
 
 

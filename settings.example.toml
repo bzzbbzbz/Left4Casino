@@ -1,4 +1,9 @@
 [bot]
+# For safe staging/prod workflow create two local copies that are NOT committed:
+#   cp settings.example.toml settings.prod.toml
+#   cp settings.example.toml settings.stage.toml
+# Then run each bot with its own CONFIG_FILE_PATH and CASINO_DB_PATH.
+# Production and staging must use different bot tokens.
 # Bot token. Obtain one from https://t.me/botfather
 token = "1234567890:AaBbCcDdEeFfGrOoShALlMmNnOoPpQqRrSs"
 # Where to store users' data. Options: "memory", "redis".
@@ -47,6 +52,7 @@ throttle_time_top = 5
 block_private_chats = false
 # List of allowed chat IDs (whitelist). If empty, all group chats are allowed.
 # Example: allowed_chat_ids = [-100123456789, -100987654321]
+# For staging, specify only test chat IDs here to prevent accidental replies in production chats.
 allowed_chat_ids = []
 
 [reports]
@@ -91,7 +97,7 @@ phase1_min_minutes = 10       # min duration of Phase 1
 phase1_max_minutes = 25       # max duration of Phase 1
 phase2_min_minutes = 2        # min duration of Phase 2
 phase2_max_minutes = 5        # max duration of Phase 2
-seed_delay_minutes = 0.1        # after how many minutes croupier adds seed
+seed_delay_minutes = 5        # after how many minutes croupier adds seed
 max_duration_minutes = 30     # absolute hard cap
 
 # Croupier messages

@@ -80,12 +80,14 @@ async def test_main_registers_duel_happy_heist_scheduler_jobs() -> None:
         scheduled_time=datetime.now(UTC) + timedelta(minutes=5),
         tier=SimpleNamespace(duration_minutes=1),
     )
-    happy_service.generate_daily_schedule.return_value = [future_moment]
+    happy_service.generate_daily_schedule = AsyncMock(return_value=[future_moment])
     happy_service.start_moment = AsyncMock()
     happy_service.end_moment = AsyncMock()
 
     heist_service = MagicMock()
-    heist_service.generate_daily_schedule.return_value = datetime.now(UTC) + timedelta(minutes=30)
+    heist_service.generate_daily_schedule = AsyncMock(
+        return_value=datetime.now(UTC) + timedelta(minutes=30)
+    )
     heist_service.start_heist = AsyncMock()
     heist_service.send_warning = AsyncMock()
     heist_service.check_seed_needed = AsyncMock()

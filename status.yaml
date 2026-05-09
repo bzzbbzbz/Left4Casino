@@ -80,3 +80,27 @@ tasks:
     spec: docs/specs/TASK-015_AUTOMATED_BACKUPS.md
     assignee: cursor-agent
     priority: HIGH
+  - id: TASK-016
+    name: "Big integer money storage for 10^24+ balances"
+    status: SPEC_READY
+    spec: docs/specs/TASK-016_BIGINT_MONEY_STORAGE.md
+    assignee: cursor-agent
+    priority: HIGH
+  - id: TASK-017
+    name: "Daily code quality report (lint export + OpenCode CLI + admin report)"
+    status: SPEC_READY
+    spec: docs/specs/TASK-017_DAILY_CODE_QUALITY_REPORT.md
+    assignee: cursor-agent
+    priority: MEDIUM
+  - id: TASK-018
+    name: "Safe staging/prod workflow for Telegram bot development"
+    status: DONE
+    spec: docs/specs/archive/TASK-018_SAFE_STAGING_PROD_WORKFLOW.md
+    assignee: cursor-agent
+    priority: HIGH
+  - id: TASK-019
+    name: "Telegram bot-to-bot E2E smoke tester for staging"
+    status: SPEC_READY
+    spec: docs/specs/TASK-019_TELEGRAM_E2E_BOT_TESTER.md
+    assignee: cursor-agent
+    priority: MEDIUM

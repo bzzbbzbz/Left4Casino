@@ -251,7 +251,7 @@ async def main():
     # Happy moment scheduler jobs
     async def generate_happy_moment_schedule():
         """Generate daily schedule for happy moments (called at 00:00)"""
-        moments = happy_moment_service.generate_daily_schedule()
+        moments = await happy_moment_service.generate_daily_schedule()
 
         # Schedule each moment
         for moment in moments:
@@ -287,7 +287,7 @@ async def main():
 
     # Generate initial schedule on startup
     if happy_moment_config.enabled:
-        moments = happy_moment_service.generate_daily_schedule()
+        moments = await happy_moment_service.generate_daily_schedule()
         for moment in moments:
             scheduler.add_job(
                 start_happy_moment,
@@ -301,7 +301,7 @@ async def main():
     # Heist scheduler jobs
     async def generate_heist_schedule():
         """Generate daily schedule for heist (called at 00:00)"""
-        scheduled_time = heist_service.generate_daily_schedule()
+        scheduled_time = await heist_service.generate_daily_schedule()
 
         if scheduled_time:
             # Schedule warning (10 minutes before)
@@ -410,7 +410,7 @@ async def main():
 
     # Generate initial schedule on startup
     if heist_config.enabled:
-        scheduled_time = heist_service.generate_daily_schedule()
+        scheduled_time = await heist_service.generate_daily_schedule()
         if scheduled_time:
             # Schedule warning
             warning_time = scheduled_time - timedelta(minutes=heist_config.warning_before_minutes)
