@@ -1,3 +1,4 @@
+import contextlib
 import json
 from os import getenv
 from pathlib import Path
@@ -6,7 +7,10 @@ import aiosqlite
 
 from bot.models.entities import User
 from bot.models.events import GameEvent
+from bot.money import decode_money, encode_money, normalize_money_dict
 from bot.utils.context import add_db_action
+
+USER_MONEY_FIELDS = ("balance", "bid", "safe_balance", "last_dice_bet", "total_won", "total_lost")
 
 
 class Database:
@@ -27,8 +31,8 @@ class Database:
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
                     nickname TEXT,
-                    balance INTEGER NOT NULL DEFAULT 50,
-                    bid INTEGER DEFAULT 1,
+                    balance TEXT NOT NULL DEFAULT '50',
+                    bid TEXT DEFAULT '1',
                     state TEXT DEFAULT 'IDLE',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -40,7 +44,7 @@ class Database:
                     event_id TEXT PRIMARY KEY,
                     user_id INTEGER,
                     event_type TEXT NOT NULL,
-                    amount INTEGER DEFAULT 0,
+                    amount TEXT DEFAULT '0',
                     metadata TEXT, -- JSON storage
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(user_id) REFERENCES users(user_id)
@@ -56,7 +60,7 @@ class Database:
                     started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     finished_at DATETIME,
                     ai_score INTEGER,
-                    reward_amount INTEGER,
+                    reward_amount TEXT,
                     FOREIGN KEY(user_id) REFERENCES users(user_id)
                 )
             """)
@@ -91,7 +95,7 @@ class Database:
             except Exception:
                 pass
             try:
-                await db.execute("ALTER TABLE users ADD COLUMN bid INTEGER DEFAULT 1")
+                await db.execute("ALTER TABLE users ADD COLUMN bid TEXT DEFAULT '1'")
             except Exception:
                 pass
             try:
@@ -109,11 +113,11 @@ class Database:
             except Exception:
                 pass
             try:
-                await db.execute("ALTER TABLE users ADD COLUMN total_won INTEGER DEFAULT 0")
+                await db.execute("ALTER TABLE users ADD COLUMN total_won TEXT DEFAULT '0'")
             except Exception:
                 pass
             try:
-                await db.execute("ALTER TABLE users ADD COLUMN total_lost INTEGER DEFAULT 0")
+                await db.execute("ALTER TABLE users ADD COLUMN total_lost TEXT DEFAULT '0'")
             except Exception:
                 pass
             try:
@@ -128,11 +132,11 @@ class Database:
                 pass
             # Safe balance and last_dice_bet (for repositories)
             try:
-                await db.execute("ALTER TABLE users ADD COLUMN safe_balance INTEGER DEFAULT 0")
+                await db.execute("ALTER TABLE users ADD COLUMN safe_balance TEXT DEFAULT '0'")
             except Exception:
                 pass
             try:
-                await db.execute("ALTER TABLE users ADD COLUMN last_dice_bet INTEGER")
+                await db.execute("ALTER TABLE users ADD COLUMN last_dice_bet TEXT")
             except Exception:
                 pass
 
@@ -147,7 +151,7 @@ class Database:
                     opponent_id INTEGER,
                     opponent_nickname TEXT,
                     opponent_first_name TEXT,
-                    bet_amount INTEGER NOT NULL,
+                    bet_amount TEXT NOT NULL,
                     initiator_going_debt INTEGER DEFAULT 0,
                     status TEXT DEFAULT 'pending',
                     initiator_roll INTEGER,
@@ -168,7 +172,7 @@ class Database:
                     chat_id INTEGER NOT NULL,
                     debtor_id INTEGER NOT NULL,
                     creditor_id INTEGER NOT NULL,
-                    amount INTEGER NOT NULL,
+                    amount TEXT NOT NULL,
                     challenge_id TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -195,35 +199,27 @@ class Database:
                 if user_id is None:
                     continue
 
-                # Calculate stats
                 async with db.execute(
-                    """
-                    SELECT
-                        COUNT(*) as games,
-                        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as won,
-                        SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as lost
-                    FROM event_history
-                    WHERE user_id = ? AND event_type IN ('win', 'loss')
-                """,
+                    "SELECT event_type, amount FROM event_history WHERE user_id = ? AND event_type IN ('win', 'loss')",
                     (user_id,),
                 ) as stats_cursor:
-                    row = await stats_cursor.fetchone()
-                    if row:
-                        games, won, lost = row
-                        games = games or 0
-                        won = won or 0
-                        lost = lost or 0
+                    rows = await stats_cursor.fetchall()
+                    games = len(rows)
+                    won = sum(max(0, decode_money(row[1])) for row in rows if row[0] == "win")
+                    lost = sum(
+                        abs(min(0, decode_money(row[1]))) for row in rows if row[0] == "loss"
+                    )
 
-                        await db.execute(
-                            """
-                            UPDATE users
-                            SET games_played = ?,
-                                total_won = ?,
-                                total_lost = ?
-                            WHERE user_id = ?
-                        """,
-                            (games, won, lost, user_id),
-                        )
+                    await db.execute(
+                        """
+                        UPDATE users
+                        SET games_played = ?,
+                            total_won = ?,
+                            total_lost = ?
+                        WHERE user_id = ?
+                    """,
+                        (games, encode_money(won), encode_money(lost), user_id),
+                    )
 
             await db.commit()
         print("Stats backfill completed.")
@@ -273,7 +269,7 @@ class Database:
                     if event_type == "bankruptcy":
                         continue
 
-                    val = amount if amount is not None else 0
+                    val = decode_money(amount)
                     balance += val
 
                     if balance <= 0:
@@ -329,20 +325,26 @@ class Database:
             ) as cursor:
                 row = await cursor.fetchone()
                 if row:
-                    return row[0]
+                    return decode_money(row[0])
 
                 # Если пользователя нет, создаем его
                 await db.execute(
-                    "INSERT INTO users (user_id, balance, bid) VALUES (?, ?, 1)",
-                    (user_id, default_balance),
+                    "INSERT INTO users (user_id, balance, bid) VALUES (?, ?, '1')",
+                    (user_id, encode_money(default_balance)),
                 )
                 await db.commit()
                 return default_balance
 
     async def update_balance(self, user_id: int, amount: int):
         async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT balance FROM users WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            current = decode_money(row[0]) if row else 0
             await db.execute(
-                "UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id)
+                "UPDATE users SET balance = ? WHERE user_id = ?",
+                (encode_money(current + amount), user_id),
             )
             await db.commit()
             add_db_action(f"Updated balance for user {user_id} by {amount}")
@@ -350,7 +352,8 @@ class Database:
     async def set_balance(self, user_id: int, new_balance: int):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "UPDATE users SET balance = ? WHERE user_id = ?", (new_balance, user_id)
+                "UPDATE users SET balance = ? WHERE user_id = ?",
+                (encode_money(new_balance), user_id),
             )
             await db.commit()
             add_db_action(f"Set balance for user {user_id} to {new_balance}")
@@ -360,11 +363,13 @@ class Database:
             async with db.execute("SELECT bid FROM users WHERE user_id = ?", (user_id,)) as cursor:
                 row = await cursor.fetchone()
                 # Default bid is 1 if not set (though schema has default 1)
-                return row[0] if row and row[0] is not None else 1
+                return decode_money(row[0], default=1) if row and row[0] is not None else 1
 
     async def update_bid(self, user_id: int, new_bid: int):
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE users SET bid = ? WHERE user_id = ?", (new_bid, user_id))
+            await db.execute(
+                "UPDATE users SET bid = ? WHERE user_id = ?", (encode_money(new_bid), user_id)
+            )
             await db.commit()
             add_db_action(f"Updated bid for user {user_id} to {new_bid}")
 
@@ -377,7 +382,7 @@ class Database:
                 "SELECT * FROM users WHERE nickname = ? COLLATE NOCASE", (clean_nickname,)
             ) as cursor:
                 row = await cursor.fetchone()
-                return dict(row) if row else None
+                return normalize_money_dict(dict(row), USER_MONEY_FIELDS) if row else None
 
     async def get_user(self, user_id: int) -> User | None:
         """Get user from DB; returns Pydantic User model or None."""
@@ -387,7 +392,7 @@ class Database:
                 row = await cursor.fetchone()
                 if row is None:
                     return None
-                d = dict(row)
+                d = normalize_money_dict(dict(row), USER_MONEY_FIELDS)
                 # Normalize for User model (missing columns get defaults)
                 return User(
                     user_id=d["user_id"],
@@ -406,7 +411,7 @@ class Database:
     async def register_user(self, user_id: int, nickname: str):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "INSERT OR IGNORE INTO users (user_id, nickname, balance, bid) VALUES (?, ?, 50, 1)",
+                "INSERT OR IGNORE INTO users (user_id, nickname, balance, bid) VALUES (?, ?, '50', '1')",
                 (user_id, nickname),
             )
             # Always update nickname in case it changed
@@ -425,17 +430,28 @@ class Database:
             won_add = amount if amount > 0 else 0
             lost_add = abs(amount) if amount < 0 else 0
             bankruptcy_add = 1 if is_bankruptcy else 0
+            async with db.execute(
+                "SELECT total_won, total_lost FROM users WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            current_won = decode_money(row[0]) if row else 0
+            current_lost = decode_money(row[1]) if row else 0
 
             await db.execute(
                 """
                 UPDATE users
                 SET games_played = games_played + 1,
-                    total_won = total_won + ?,
-                    total_lost = total_lost + ?,
+                    total_won = ?,
+                    total_lost = ?,
                     bankruptcy_count = bankruptcy_count + ?
                 WHERE user_id = ?
             """,
-                (won_add, lost_add, bankruptcy_add, user_id),
+                (
+                    encode_money(current_won + won_add),
+                    encode_money(current_lost + lost_add),
+                    bankruptcy_add,
+                    user_id,
+                ),
             )
             await db.commit()
             add_db_action(
@@ -454,7 +470,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT INTO event_history (event_id, user_id, event_type, amount, metadata, chat_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (event_id, user_id, event_type, amount, metadata, chat_id),
+                (event_id, user_id, event_type, encode_money(amount), metadata, chat_id),
             )
             await db.commit()
             add_db_action(
@@ -502,37 +518,44 @@ class Database:
                 "SELECT balance FROM users WHERE user_id = ?", (from_user_id,)
             ) as cursor:
                 row = await cursor.fetchone()
-                if not row or row[0] < amount:
+                sender_balance = decode_money(row[0]) if row else 0
+                if not row or sender_balance < amount:
                     return False
 
             # Transaction
             try:
                 await db.execute(
-                    "UPDATE users SET balance = balance - ? WHERE user_id = ?",
-                    (amount, from_user_id),
+                    "UPDATE users SET balance = ? WHERE user_id = ?",
+                    (encode_money(sender_balance - amount), from_user_id),
                 )
+                async with db.execute(
+                    "SELECT balance FROM users WHERE user_id = ?", (to_user_id,)
+                ) as cursor:
+                    receiver_row = await cursor.fetchone()
+                receiver_balance = decode_money(receiver_row[0]) if receiver_row else 0
                 await db.execute(
-                    "UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, to_user_id)
+                    "UPDATE users SET balance = ? WHERE user_id = ?",
+                    (encode_money(receiver_balance + amount), to_user_id),
                 )
 
                 await db.execute(
                     "INSERT INTO event_history (event_id, user_id, event_type, amount, chat_id) VALUES (?, ?, 'transfer_out', ?, ?)",
-                    (event_id_out, from_user_id, -amount, chat_id),
+                    (event_id_out, from_user_id, encode_money(-amount), chat_id),
                 )
                 await db.execute(
                     "INSERT INTO event_history (event_id, user_id, event_type, amount, chat_id) VALUES (?, ?, 'transfer_in', ?, ?)",
-                    (event_id_in, to_user_id, amount, chat_id),
+                    (event_id_in, to_user_id, encode_money(amount), chat_id),
                 )
 
                 # Check for bankruptcy for sender
                 # row[0] was old balance
-                new_balance = row[0] - amount
+                new_balance = sender_balance - amount
                 if new_balance <= 0:
                     import uuid
 
                     await db.execute(
                         "INSERT INTO event_history (event_id, user_id, event_type, amount, chat_id) VALUES (?, ?, 'bankruptcy', 0, ?)",
-                        (str(uuid.uuid4()), from_user_id, chat_id),
+                        (str(uuid.uuid4()), from_user_id, encode_money(0), chat_id),
                     )
                     await db.execute(
                         "UPDATE users SET bankruptcy_count = bankruptcy_count + 1 WHERE user_id = ?",
@@ -599,7 +622,7 @@ class Database:
                 """UPDATE ai_credit_sessions
                    SET status = ?, ai_score = ?, reward_amount = ?, finished_at = CURRENT_TIMESTAMP
                    WHERE session_id = ?""",
-                (status, score, reward, session_id),
+                (status, score, encode_money(reward, default=None), session_id),
             )
             await db.commit()
 
@@ -639,29 +662,8 @@ class Database:
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            # We aggregate by user_id
-            # We need:
-            # - total games (count of win/loss)
-            # - total won (sum of positive amounts in win/loss)
-            # - total lost (sum of abs negative amounts in win/loss)
-            # - bankruptcy count (count of bankruptcy events)
-            # - total given (sum of abs amounts in transfer_out)
-            # - max win (max positive amount in win/loss)
-
-            # Note: SQLite doesn't have a simple pivot, so we use conditional aggregation.
-            # Added: avg_bid calculation (parsing JSON is expensive but feasible for daily stats)
-            # We extract 'bid' from metadata JSON if event_type is win/loss
             query = """
-                SELECT
-                    u.user_id,
-                    u.nickname,
-                    COUNT(CASE WHEN eh.event_type IN ('win', 'loss') THEN 1 END) as games_played,
-                    SUM(CASE WHEN eh.event_type IN ('win') AND eh.amount > 0 THEN eh.amount ELSE 0 END) as total_won,
-                    SUM(CASE WHEN eh.event_type IN ('loss') AND eh.amount < 0 THEN ABS(eh.amount) ELSE 0 END) as total_lost,
-                    SUM(CASE WHEN eh.event_type = 'bankruptcy' THEN 1 ELSE 0 END) as bankruptcy_count,
-                    SUM(CASE WHEN eh.event_type = 'transfer_out' THEN ABS(eh.amount) ELSE 0 END) as total_given,
-                    MAX(CASE WHEN eh.event_type IN ('win') THEN eh.amount ELSE 0 END) as max_win_amount,
-                    AVG(CASE WHEN eh.event_type IN ('win', 'loss') AND eh.metadata IS NOT NULL THEN CAST(json_extract(eh.metadata, '$.bid') AS INTEGER) ELSE NULL END) as avg_bid
+                SELECT u.user_id, u.nickname, eh.event_type, eh.amount, eh.metadata
                 FROM users u
                 JOIN event_history eh ON u.user_id = eh.user_id
                 WHERE eh.created_at BETWEEN ? AND ?
@@ -672,11 +674,48 @@ class Database:
                 query += " AND eh.chat_id = ?"
                 params.append(chat_id)
 
-            query += " GROUP BY u.user_id, u.nickname"
-
             async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+            stats: dict[int, dict] = {}
+            bid_totals: dict[int, list[int]] = {}
+            for row in rows:
+                user_id = row["user_id"]
+                item = stats.setdefault(
+                    user_id,
+                    {
+                        "user_id": user_id,
+                        "nickname": row["nickname"],
+                        "games_played": 0,
+                        "total_won": 0,
+                        "total_lost": 0,
+                        "bankruptcy_count": 0,
+                        "total_given": 0,
+                        "max_win_amount": 0,
+                        "avg_bid": None,
+                    },
+                )
+                amount = decode_money(row["amount"])
+                event_type = row["event_type"]
+                if event_type in ("win", "loss"):
+                    item["games_played"] += 1
+                    if event_type == "win" and amount > 0:
+                        item["total_won"] += amount
+                        item["max_win_amount"] = max(item["max_win_amount"], amount)
+                    elif event_type == "loss" and amount < 0:
+                        item["total_lost"] += abs(amount)
+                    if row["metadata"]:
+                        with contextlib.suppress(Exception):
+                            meta = json.loads(row["metadata"])
+                            if "bid" in meta:
+                                bid_totals.setdefault(user_id, []).append(decode_money(meta["bid"]))
+                elif event_type == "bankruptcy":
+                    item["bankruptcy_count"] += 1
+                elif event_type == "transfer_out":
+                    item["total_given"] += abs(amount)
+            for user_id, bids in bid_totals.items():
+                if bids:
+                    stats[user_id]["avg_bid"] = sum(bids) / len(bids)
+            return list(stats.values())
 
     async def get_yesterday_total_won(
         self, chat_id: int, start_time_utc: str, end_time_utc: str
@@ -696,52 +735,61 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 """
-                SELECT COALESCE(SUM(amount), 0) as total_won
+                SELECT amount
                 FROM event_history
                 WHERE chat_id = ?
                   AND event_type = 'win'
-                  AND amount > 0
                   AND created_at BETWEEN ? AND ?
                 """,
                 (chat_id, start_time_utc, end_time_utc),
             ) as cursor:
-                row = await cursor.fetchone()
-                return int(row[0]) if row else 0
+                rows = await cursor.fetchall()
+                return sum(
+                    amount for amount in (decode_money(row[0]) for row in rows) if amount > 0
+                )
 
     async def get_top_users_in_group(self, chat_id: int, limit: int = 30):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT
-                    u.user_id,
-                    u.nickname,
-                    u.balance,
-                    COALESCE(stats.games_played, 0) as games_played,
-                    COALESCE(stats.total_won, 0) as total_won,
-                    COALESCE(stats.total_lost, 0) as total_lost,
-                    COALESCE(stats.bankruptcy_count, 0) as bankruptcy_count
+                SELECT u.user_id, u.nickname, u.balance, eh.event_type, eh.amount
                 FROM users u
                 JOIN user_groups ug ON u.user_id = ug.user_id
-                LEFT JOIN (
-                    SELECT
-                        user_id,
-                        COUNT(CASE WHEN event_type IN ('win', 'loss') THEN 1 END) as games_played,
-                        SUM(CASE WHEN event_type IN ('win') AND amount > 0 THEN amount ELSE 0 END) as total_won,
-                        SUM(CASE WHEN event_type IN ('loss') AND amount < 0 THEN ABS(amount) ELSE 0 END) as total_lost,
-                        SUM(CASE WHEN event_type = 'bankruptcy' THEN 1 ELSE 0 END) as bankruptcy_count
-                    FROM event_history
-                    WHERE chat_id = ?
-                    GROUP BY user_id
-                ) stats ON u.user_id = stats.user_id
+                LEFT JOIN event_history eh ON u.user_id = eh.user_id AND eh.chat_id = ?
                 WHERE ug.chat_id = ?
-                ORDER BY u.balance DESC
-                LIMIT ?
                 """,
-                (chat_id, chat_id, limit),
+                (chat_id, chat_id),
             ) as cursor:
                 rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+                users: dict[int, dict] = {}
+                for row in rows:
+                    item = users.setdefault(
+                        row["user_id"],
+                        {
+                            "user_id": row["user_id"],
+                            "nickname": row["nickname"],
+                            "balance": decode_money(row["balance"]),
+                            "games_played": 0,
+                            "total_won": 0,
+                            "total_lost": 0,
+                            "bankruptcy_count": 0,
+                        },
+                    )
+                    if row["event_type"] is None:
+                        continue
+                    amount = decode_money(row["amount"])
+                    if row["event_type"] in ("win", "loss"):
+                        item["games_played"] += 1
+                    if row["event_type"] == "win" and amount > 0:
+                        item["total_won"] += amount
+                    elif row["event_type"] == "loss" and amount < 0:
+                        item["total_lost"] += abs(amount)
+                    elif row["event_type"] == "bankruptcy":
+                        item["bankruptcy_count"] += 1
+                return sorted(users.values(), key=lambda user: user["balance"], reverse=True)[
+                    :limit
+                ]
 
     # [START SPEC:TASK-014:scheduled-events-persistence]
     # Методы для работы с расписанием событий (REQ-014-1)

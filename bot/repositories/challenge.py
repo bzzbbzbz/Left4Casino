@@ -5,6 +5,7 @@ from typing import Any
 
 import aiosqlite
 
+from bot.money import decode_money, encode_money
 from bot.repositories.base import BaseRepository
 
 
@@ -34,7 +35,7 @@ class ChallengeRepository(BaseRepository[Any]):
                 initiator_id,
                 nickname,
                 first_name,
-                bet,
+                encode_money(bet),
                 1 if going_debt else 0,
                 message_id,
             ),
@@ -52,7 +53,7 @@ class ChallengeRepository(BaseRepository[Any]):
             "opponent_id": d.get("opponent_id"),
             "opponent_nickname": d.get("opponent_nickname"),
             "opponent_first_name": d.get("opponent_first_name"),
-            "bet_amount": d["bet_amount"],
+            "bet_amount": decode_money(d["bet_amount"]),
             "initiator_going_debt": d.get("initiator_going_debt"),
             "status": d.get("status", "pending"),
             "initiator_roll": d.get("initiator_roll"),
@@ -166,13 +167,13 @@ class ChallengeRepository(BaseRepository[Any]):
         )
         if row is None or row["last_dice_bet"] is None:
             return None
-        return int(row["last_dice_bet"])
+        return decode_money(row["last_dice_bet"])
 
     async def set_last_dice_bet(self, user_id: int, bet: int) -> None:
         """Store last dice bet for user (caller must ensure user exists, e.g. register_user)."""
         await self._execute(
             "UPDATE users SET last_dice_bet = ? WHERE user_id = ?",
-            (bet, user_id),
+            (encode_money(bet), user_id),
         )
 
     async def get_expired_challenges_with_message(

@@ -14,6 +14,7 @@ import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 import pytz
 import structlog
@@ -23,6 +24,11 @@ from bot.db import Database
 from bot.utils.formatters import format_number
 
 logger = structlog.get_logger()
+
+
+def _pct_of_int(value: int, pct: float) -> int:
+    """Calculate integer percentage without converting large money values to float."""
+    return int(Decimal(value) * Decimal(str(pct)) / Decimal(100))
 
 
 # Сообщения крупье для Фазы 1 (случайный выбор)
@@ -164,18 +170,6 @@ class HeistService:
         # Получаем сумму выигрышей
         b_raw = await self.db.get_yesterday_total_won(chat_id, start_utc, end_utc)
 
-        # Защита от аномально больших значений (возможно битые данные в БД)
-        # Разумный максимум: 10 миллионов очков за день
-        max_reasonable_value = 10_000_000
-        if b_raw > max_reasonable_value:
-            logger.warning(
-                "Detected anomalously high b_raw value, capping to max",
-                chat_id=chat_id,
-                b_raw_original=b_raw,
-                b_raw_capped=max_reasonable_value,
-            )
-            b_raw = max_reasonable_value
-
         # Fallback если данных нет
         if b_raw < self.config.base_value_fallback:
             b_raw = self.config.base_value_fallback
@@ -186,7 +180,7 @@ class HeistService:
             1.0 + self.config.base_value_noise_pct / 100,
         )
 
-        b = int(b_raw * noise_factor)
+        b = int(Decimal(b_raw) * Decimal(str(noise_factor)))
 
         logger.info(
             "Calculated base value for heist",
@@ -365,9 +359,9 @@ class HeistService:
                 # REQ: pot_cap = B * pot_cap_pct%; seed = B * random(seed_min_pct..seed_max_pct)%
                 # Source: HEIST_SPEC.md, секция "Экономика"
                 # CRITICAL: Множители влияют на длительность ивента и game balance
-                pot_cap = int(b * self.config.pot_cap_pct / 100)
+                pot_cap = _pct_of_int(b, self.config.pot_cap_pct)
                 seed_pct = random.uniform(self.config.seed_min_pct, self.config.seed_max_pct)
-                seed_amount = int(b * seed_pct / 100)
+                seed_amount = _pct_of_int(b, seed_pct)
                 # [END SPEC:HEIST-ECONOMY]
 
                 # Создаём состояние
@@ -565,7 +559,7 @@ class HeistService:
         now = datetime.now(self.timezone)
 
         if now >= state.phase1_end:
-            min_pot = int(state.base_value * self.config.min_pot_pct / 100)
+            min_pot = _pct_of_int(state.base_value, self.config.min_pot_pct)
 
             # Если банк меньше min_pot и продление ещё не было
             if state.pot < min_pot and not state.extended:
@@ -635,7 +629,7 @@ class HeistService:
         # REQ: commission = pot * commission_pct%; payout = pot - commission (дефляция)
         # Source: HEIST_SPEC.md, секция "Экономика", "Завершение"
         # CRITICAL: Комиссия уничтожается из экономики; не менять без ревью баланса
-        commission = int(state.pot * self.config.commission_pct / 100)
+        commission = _pct_of_int(state.pot, self.config.commission_pct)
         payout = state.pot - commission
 
         # Выплачиваем победителю

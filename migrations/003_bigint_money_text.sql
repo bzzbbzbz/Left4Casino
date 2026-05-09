@@ -1,0 +1,24 @@
+-- migrations/003_bigint_money_text.sql
+-- Migration: TASK-016 Big Integer Money Storage
+-- Author: opencode-agent
+-- Date: 2026-05-09
+-- Reason: Persist money fields as SQLite TEXT canonical decimal strings.
+
+-- ============================================================
+-- UPGRADE
+-- ============================================================
+-- Implemented by migrations/migration_runner.py apply_bigint_money_migration().
+-- Pure SQL ALTER COLUMN is unsafe/unavailable in SQLite for this schema change.
+-- Converted money fields:
+--   users.balance, users.bid, users.safe_balance, users.last_dice_bet, users.total_won, users.total_lost
+--   event_history.amount (signed)
+--   ai_credit_sessions.reward_amount (nullable)
+--   dice_challenges.bet_amount
+--   player_debts.amount
+-- Intentionally NOT converted: dice_challenges.initiator_going_debt (boolean).
+
+-- ============================================================
+-- DOWNGRADE
+-- ============================================================
+-- Manual restore from backup recommended. Converting TEXT money back to INTEGER
+-- can truncate/fail for values outside SQLite signed 64-bit integer range.

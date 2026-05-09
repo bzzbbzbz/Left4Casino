@@ -6,7 +6,10 @@ from __future__ import annotations
 import aiosqlite
 
 from bot.models.entities import User
+from bot.money import decode_money, encode_money, normalize_money_dict
 from bot.repositories.base import BaseRepository
+
+USER_MONEY_FIELDS = ("balance", "bid", "safe_balance", "last_dice_bet", "total_won", "total_lost")
 
 
 class UserRepository(BaseRepository[User]):
@@ -17,7 +20,7 @@ class UserRepository(BaseRepository[User]):
         row = await self._fetchone("SELECT * FROM users WHERE user_id = ?", (user_id,))
         if row is None:
             return None
-        d = dict(row)
+        d = normalize_money_dict(dict(row), USER_MONEY_FIELDS)
         return User(
             user_id=d["user_id"],
             nickname=d.get("nickname"),
@@ -39,39 +42,37 @@ class UserRepository(BaseRepository[User]):
             (user_id,),
         )
         if row is not None:
-            return row["balance"]
+            return decode_money(row["balance"])
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "INSERT INTO users (user_id, balance, bid) VALUES (?, ?, 1)",
-                (user_id, default_balance),
+                "INSERT INTO users (user_id, balance, bid) VALUES (?, ?, '1')",
+                (user_id, encode_money(default_balance)),
             )
             await db.commit()
         return default_balance
 
     async def update_balance(self, user_id: int, amount: int) -> None:
         """Update user balance (add amount)."""
-        await self._execute(
-            "UPDATE users SET balance = balance + ? WHERE user_id = ?",
-            (amount, user_id),
-        )
+        current = await self.get_balance(user_id)
+        await self.set_balance(user_id, current + amount)
 
     async def set_balance(self, user_id: int, new_balance: int) -> None:
         """Set user balance to new value."""
         await self._execute(
             "UPDATE users SET balance = ? WHERE user_id = ?",
-            (new_balance, user_id),
+            (encode_money(new_balance), user_id),
         )
 
     async def get_bid(self, user_id: int) -> int:
         """Get user bid."""
         row = await self._fetchone("SELECT bid FROM users WHERE user_id = ?", (user_id,))
-        return row["bid"] if row and row["bid"] is not None else 1
+        return decode_money(row["bid"], default=1) if row and row["bid"] is not None else 1
 
     async def update_bid(self, user_id: int, new_bid: int) -> None:
         """Update user bid."""
         await self._execute(
             "UPDATE users SET bid = ? WHERE user_id = ?",
-            (new_bid, user_id),
+            (encode_money(new_bid), user_id),
         )
 
     async def get_user_by_nickname(self, nickname: str) -> dict | None:
@@ -81,13 +82,13 @@ class UserRepository(BaseRepository[User]):
             "SELECT * FROM users WHERE nickname = ? COLLATE NOCASE",
             (clean,),
         )
-        return dict(row) if row else None
+        return normalize_money_dict(dict(row), USER_MONEY_FIELDS) if row else None
 
     async def register_user(self, user_id: int, nickname: str) -> None:
         """Insert or update user (nickname)."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "INSERT OR IGNORE INTO users (user_id, nickname, balance, bid) VALUES (?, ?, 50, 1)",
+                "INSERT OR IGNORE INTO users (user_id, nickname, balance, bid) VALUES (?, ?, '50', '1')",
                 (user_id, nickname),
             )
             await db.execute(
@@ -110,14 +111,24 @@ class UserRepository(BaseRepository[User]):
         won_add = amount if amount > 0 else 0
         lost_add = abs(amount) if amount < 0 else 0
         bankruptcy_add = 1 if is_bankruptcy else 0
+        row = await self._fetchone(
+            "SELECT total_won, total_lost FROM users WHERE user_id = ?", (user_id,)
+        )
+        current_won = decode_money(row["total_won"]) if row else 0
+        current_lost = decode_money(row["total_lost"]) if row else 0
         await self._execute(
             """UPDATE users
                SET games_played = games_played + 1,
-                   total_won = total_won + ?,
-                   total_lost = total_lost + ?,
+                   total_won = ?,
+                   total_lost = ?,
                    bankruptcy_count = bankruptcy_count + ?
                WHERE user_id = ?""",
-            (won_add, lost_add, bankruptcy_add, user_id),
+            (
+                encode_money(current_won + won_add),
+                encode_money(current_lost + lost_add),
+                bankruptcy_add,
+                user_id,
+            ),
         )
 
     async def increment_bankruptcy_count(self, user_id: int) -> None:
@@ -140,15 +151,21 @@ class UserRepository(BaseRepository[User]):
                 (from_user_id,),
             ) as cur:
                 row = await cur.fetchone()
-            if row is None or row[0] < amount:
+            sender_balance = decode_money(row[0]) if row else 0
+            if row is None or sender_balance < amount:
                 return False
+            async with db.execute(
+                "SELECT balance FROM users WHERE user_id = ?", (to_user_id,)
+            ) as cur:
+                receiver_row = await cur.fetchone()
+            receiver_balance = decode_money(receiver_row[0]) if receiver_row else 0
             await db.execute(
-                "UPDATE users SET balance = balance - ? WHERE user_id = ?",
-                (amount, from_user_id),
+                "UPDATE users SET balance = ? WHERE user_id = ?",
+                (encode_money(sender_balance - amount), from_user_id),
             )
             await db.execute(
-                "UPDATE users SET balance = balance + ? WHERE user_id = ?",
-                (amount, to_user_id),
+                "UPDATE users SET balance = ? WHERE user_id = ?",
+                (encode_money(receiver_balance + amount), to_user_id),
             )
             await db.commit()
         return True
@@ -161,7 +178,7 @@ class UserRepository(BaseRepository[User]):
         )
         if row is None:
             return 0
-        return row["safe_balance"] if row["safe_balance"] is not None else 0
+        return decode_money(row["safe_balance"]) if row["safe_balance"] is not None else 0
 
     # [START SPEC:SAFE-ATOMIC:safe_deposit]
     # REQ: Атомарно balance -= amount, safe_balance += amount (в одной транзакции)
@@ -180,16 +197,16 @@ class UserRepository(BaseRepository[User]):
                 row = await cur.fetchone()
             if row is None:
                 return (False, "Пользователь не найден")
-            balance = row["balance"] or 0
-            safe_balance = row["safe_balance"] or 0
+            balance = decode_money(row["balance"])
+            safe_balance = decode_money(row["safe_balance"])
             if balance < amount:
                 return (False, "Недостаточно средств на балансе")
             await db.execute(
                 """UPDATE users
-                   SET balance = balance - ?,
-                       safe_balance = safe_balance + ?
+                   SET balance = ?,
+                       safe_balance = ?
                    WHERE user_id = ?""",
-                (amount, amount, user_id),
+                (encode_money(balance - amount), encode_money(safe_balance + amount), user_id),
             )
             await db.commit()
         return (True, balance - amount, safe_balance + amount)
@@ -213,16 +230,16 @@ class UserRepository(BaseRepository[User]):
                 row = await cur.fetchone()
             if row is None:
                 return (False, "Пользователь не найден")
-            balance = row["balance"] or 0
-            safe_balance = row["safe_balance"] or 0
+            balance = decode_money(row["balance"])
+            safe_balance = decode_money(row["safe_balance"])
             if safe_balance < amount:
                 return (False, "Недостаточно средств в сейфе")
             await db.execute(
                 """UPDATE users
-                   SET safe_balance = safe_balance - ?,
-                       balance = balance + ?
+                   SET safe_balance = ?,
+                       balance = ?
                    WHERE user_id = ?""",
-                (amount, amount, user_id),
+                (encode_money(safe_balance - amount), encode_money(balance + amount), user_id),
             )
             await db.commit()
         return (True, balance + amount, safe_balance - amount)

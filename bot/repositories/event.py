@@ -8,6 +8,7 @@ from typing import Any
 import aiosqlite
 
 from bot.models.events import GameEvent, create_event
+from bot.money import decode_money, encode_money
 from bot.repositories.base import BaseRepository
 
 
@@ -27,7 +28,7 @@ class EventRepository(BaseRepository[GameEvent]):
                     event.event_id,
                     event.user_id,
                     event.event_type,
-                    event.amount,
+                    encode_money(event.amount),
                     created,
                     event.chat_id,
                     metadata_str,
@@ -49,7 +50,7 @@ class EventRepository(BaseRepository[GameEvent]):
             """INSERT INTO event_history
                (event_id, user_id, event_type, amount, metadata, chat_id)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (event_id, user_id, event_type, amount, metadata, chat_id),
+            (event_id, user_id, event_type, encode_money(amount), metadata, chat_id),
         )
 
     async def get_user_events(
@@ -87,7 +88,7 @@ class EventRepository(BaseRepository[GameEvent]):
             event_type=row["event_type"],
             event_id=row["event_id"],
             user_id=row["user_id"],
-            amount=row["amount"],
+            amount=decode_money(row["amount"]),
             chat_id=row.get("chat_id"),
             metadata=meta,
             created_at=created,

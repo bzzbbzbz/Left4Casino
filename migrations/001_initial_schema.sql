@@ -12,15 +12,15 @@
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     nickname TEXT,
-    balance INTEGER NOT NULL DEFAULT 50,
-    bid INTEGER DEFAULT 1,
+    balance TEXT NOT NULL DEFAULT '50',
+    bid TEXT DEFAULT '1',
     state TEXT DEFAULT 'IDLE',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     games_played INTEGER DEFAULT 0,
-    total_won INTEGER DEFAULT 0,
-    total_lost INTEGER DEFAULT 0,
+    total_won TEXT DEFAULT '0',
+    total_lost TEXT DEFAULT '0',
     bankruptcy_count INTEGER DEFAULT 0,
-    safe_balance INTEGER DEFAULT 0
+    safe_balance TEXT DEFAULT '0'
 );
 
 -- Event history
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS event_history (
     event_id TEXT PRIMARY KEY,
     user_id INTEGER,
     event_type TEXT NOT NULL,
-    amount INTEGER DEFAULT 0,
+    amount TEXT DEFAULT '0',
     metadata TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     chat_id INTEGER,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS ai_credit_sessions (
     started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at DATETIME,
     ai_score INTEGER,
-    reward_amount INTEGER,
+    reward_amount TEXT,
     FOREIGN KEY (user_id) REFERENCES users (user_id)
 );
 

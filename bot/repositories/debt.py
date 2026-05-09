@@ -6,6 +6,7 @@ from typing import Any
 
 import aiosqlite
 
+from bot.money import decode_money, encode_money, normalize_money_dict
 from bot.repositories.base import BaseRepository
 
 
@@ -21,17 +22,16 @@ class DebtRepository(BaseRepository[Any]):
                WHERE chat_id = ? AND debtor_id = ? AND creditor_id = ?""",
             (chat_id, debtor_id, creditor_id),
         )
-        return dict(row) if row else None
+        return normalize_money_dict(dict(row), ("amount",)) if row else None
 
     async def get_total_debt(self, user_id: int, chat_id: int) -> int:
         """Total amount user owes to others in this chat."""
-        row = await self._fetchone(
-            """SELECT COALESCE(SUM(amount), 0) AS total
-               FROM player_debts
+        rows = await self._fetchall(
+            """SELECT amount FROM player_debts
                WHERE chat_id = ? AND debtor_id = ?""",
             (chat_id, user_id),
         )
-        return int(row["total"]) if row and row["total"] is not None else 0
+        return sum(decode_money(row["amount"]) for row in rows)
 
     async def create_or_update_debt(
         self,
@@ -54,7 +54,7 @@ class DebtRepository(BaseRepository[Any]):
             ) as cur:
                 reverse = await cur.fetchone()
             if reverse:
-                rev_id, rev_amount = reverse[0], reverse[1]
+                rev_id, rev_amount = reverse[0], decode_money(reverse[1])
                 # Net: reduce reverse by amount, or delete; reduce new debt
                 if amount >= rev_amount:
                     await db.execute(
@@ -67,8 +67,8 @@ class DebtRepository(BaseRepository[Any]):
                         return
                 else:
                     await db.execute(
-                        "UPDATE player_debts SET amount = amount - ?, updated_at = CURRENT_TIMESTAMP WHERE debt_id = ?",
-                        (amount, rev_id),
+                        "UPDATE player_debts SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE debt_id = ?",
+                        (encode_money(rev_amount - amount), rev_id),
                     )
                     await db.commit()
                     return
@@ -81,15 +81,23 @@ class DebtRepository(BaseRepository[Any]):
             ) as cur:
                 existing = await cur.fetchone()
             if existing:
+                new_amount = decode_money(existing[1]) + amount
                 await db.execute(
-                    "UPDATE player_debts SET amount = amount + ?, updated_at = CURRENT_TIMESTAMP WHERE debt_id = ?",
-                    (amount, existing[0]),
+                    "UPDATE player_debts SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE debt_id = ?",
+                    (encode_money(new_amount), existing[0]),
                 )
             else:
                 await db.execute(
                     """INSERT INTO player_debts (debt_id, chat_id, debtor_id, creditor_id, amount, challenge_id)
                        VALUES (?, ?, ?, ?, ?, ?)""",
-                    (str(uuid.uuid4()), chat_id, debtor_id, creditor_id, amount, challenge_id),
+                    (
+                        str(uuid.uuid4()),
+                        chat_id,
+                        debtor_id,
+                        creditor_id,
+                        encode_money(amount),
+                        challenge_id,
+                    ),
                 )
             await db.commit()
 
@@ -109,35 +117,43 @@ class DebtRepository(BaseRepository[Any]):
                 row = await cur.fetchone()
             if not row:
                 return (False, "Должник не найден")
-            debtor_balance = row["balance"] or 0
+            debtor_balance = decode_money(row["balance"])
             async with db.execute(
                 """SELECT debt_id, amount FROM player_debts
                    WHERE chat_id = ? AND debtor_id = ? AND creditor_id = ?""",
                 (chat_id, debtor_id, creditor_id),
             ) as cur:
                 debt_row = await cur.fetchone()
-            if not debt_row or debt_row["amount"] <= 0:
+            if not debt_row or decode_money(debt_row["amount"]) <= 0:
                 return (False, "Нет долга")
-            debt_amount = debt_row["amount"]
+            debt_amount = decode_money(debt_row["amount"])
             actual = min(amount, debt_amount, debtor_balance)
             if actual <= 0:
                 return (False, "У должника нет средств")
             try:
                 await db.execute(
-                    "UPDATE users SET balance = balance - ? WHERE user_id = ?",
-                    (actual, debtor_id),
+                    "UPDATE users SET balance = ? WHERE user_id = ?",
+                    (encode_money(debtor_balance - actual), debtor_id),
                 )
+                async with db.execute(
+                    "SELECT balance FROM users WHERE user_id = ?", (creditor_id,)
+                ) as cur:
+                    creditor_row = await cur.fetchone()
+                creditor_balance = decode_money(creditor_row[0]) if creditor_row else 0
                 await db.execute(
-                    "UPDATE users SET balance = balance + ? WHERE user_id = ?",
-                    (actual, creditor_id),
+                    "UPDATE users SET balance = ? WHERE user_id = ?",
+                    (encode_money(creditor_balance + actual), creditor_id),
                 )
                 await db.execute(
                     """UPDATE player_debts
-                       SET amount = amount - ?, updated_at = CURRENT_TIMESTAMP
+                       SET amount = ?, updated_at = CURRENT_TIMESTAMP
                        WHERE debt_id = ?""",
-                    (actual, debt_row["debt_id"]),
+                    (encode_money(debt_amount - actual), debt_row["debt_id"]),
                 )
-                await db.execute("DELETE FROM player_debts WHERE amount <= 0")
+                if debt_amount - actual <= 0:
+                    await db.execute(
+                        "DELETE FROM player_debts WHERE debt_id = ?", (debt_row["debt_id"],)
+                    )
                 await db.commit()
             except Exception:
                 await db.rollback()
