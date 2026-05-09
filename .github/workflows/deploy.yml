@@ -3,7 +3,7 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   workflow_dispatch:
 
 jobs:
@@ -30,8 +30,8 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./telegram-casino-bot
-          file: ./telegram-casino-bot/Dockerfile
+          context: .
+          file: ./Dockerfile
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:latest
@@ -43,7 +43,7 @@ jobs:
     name: Deploy to Server
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
     # Requires secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY
 
     steps:
