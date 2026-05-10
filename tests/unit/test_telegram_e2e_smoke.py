@@ -1220,3 +1220,55 @@ def test_schedule_readiness_reports_rows_read_only(tmp_path: Path) -> None:
         )
     strict_report = smoke.read_schedule_readiness(db_path, strict=True)
     assert strict_report["strict"] is True
+
+
+def test_schedule_readiness_strict_rejects_stale_e2e_running_row(tmp_path: Path) -> None:
+    db_path = tmp_path / "casino.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE scheduled_events "
+            "(event_id TEXT, event_type TEXT, chat_id INTEGER, scheduled_at TEXT, timezone TEXT, "
+            "source_date TEXT, status TEXT, metadata TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO scheduled_events VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "real-running",
+                "happy_moment_start",
+                -1001,
+                "2026-05-10T10:00:00",
+                "UTC",
+                "2026-05-10",
+                "running",
+                json.dumps({"source": "scheduler", "name": "Real Happy Moment"}),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO scheduled_events VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "e2e-running",
+                "happy_moment_start",
+                -1001,
+                "2026-05-10T10:01:00",
+                "UTC",
+                "2026-05-10",
+                "running",
+                json.dumps({"source": "e2e_hook", "name": "E2E Happy Moment"}),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO scheduled_events VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "heist-start",
+                "heist_start",
+                -1001,
+                "2026-05-10T11:00:00",
+                "UTC",
+                "2026-05-10",
+                "scheduled",
+                "{}",
+            ),
+        )
+
+    with pytest.raises(smoke.SmokeFailureError, match="stale E2E running"):
+        smoke.read_schedule_readiness(db_path, strict=True)

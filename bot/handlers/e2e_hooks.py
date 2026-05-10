@@ -13,6 +13,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 
+import aiosqlite
 import structlog
 from aiogram import Router
 from aiogram.filters import Command
@@ -83,6 +84,67 @@ def _is_e2e_heist_state(state: HeistState | None) -> bool:
     return bool(state and getattr(state, "e2e_owned", False))
 
 
+async def _mark_e2e_running_scheduled_events_done(
+    db: Database,
+    *,
+    event_types: tuple[str, ...],
+) -> int:
+    """Mark only E2E-owned running scheduled rows as done.
+
+    This hook intentionally bypasses the production scheduler API: it is a
+    stage-only cleanup for synthetic rows whose event_id can differ from the
+    live service's active state id.
+    """
+    if not event_types:
+        return 0
+    db_path = getattr(db, "db_path", None)
+    if not db_path:
+        return 0
+    placeholders = ",".join("?" for _ in event_types)
+    params = [
+        *event_types,
+        '%"source": "e2e_hook"%',
+        '%"source":"e2e_hook"%',
+        f"%{E2E_HAPPY_NAME}%",
+    ]
+    async with aiosqlite.connect(db_path) as conn:
+        table = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_events'"
+        )
+        if await table.fetchone() is None:
+            return 0
+        cursor = await conn.execute(
+            f"""
+            UPDATE scheduled_events
+            SET status = 'done', updated_at = datetime('now')
+            WHERE event_type IN ({placeholders})
+              AND status = 'running'
+              AND (
+                metadata LIKE ?
+                OR metadata LIKE ?
+                OR metadata LIKE ?
+              )
+            """,
+            params,
+        )
+        await conn.commit()
+        return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+
+
+async def _cleanup_e2e_happy_running_rows(db: Database) -> int:
+    return await _mark_e2e_running_scheduled_events_done(
+        db,
+        event_types=("happy_moment_start",),
+    )
+
+
+async def _cleanup_e2e_heist_running_rows(db: Database) -> int:
+    return await _mark_e2e_running_scheduled_events_done(
+        db,
+        event_types=("heist_start",),
+    )
+
+
 @router.message(Command("e2e_happy_start"), flags=flags)
 async def cmd_e2e_happy_start(
     message: Message,
@@ -96,6 +158,7 @@ async def cmd_e2e_happy_start(
             await message.answer("E2E_HOOK_REFUSED happy_start non-E2E Happy Moment is active")
             return
         await happy_moment_service.end_moment()
+    await _cleanup_e2e_happy_running_rows(db)
 
     now = datetime.now(happy_moment_service.timezone)
     moment = ScheduledMoment(
@@ -126,7 +189,11 @@ async def cmd_e2e_happy_start(
 
 
 @router.message(Command("e2e_happy_end"), flags=flags)
-async def cmd_e2e_happy_end(message: Message, happy_moment_service: HappyMomentService) -> None:
+async def cmd_e2e_happy_end(
+    message: Message,
+    happy_moment_service: HappyMomentService,
+    db: Database,
+) -> None:
     if not await _caller_allowed(message):
         return
     if happy_moment_service.active_moment is not None and not _is_e2e_happy_active(
@@ -135,6 +202,7 @@ async def cmd_e2e_happy_end(message: Message, happy_moment_service: HappyMomentS
         await message.answer("E2E_HOOK_REFUSED happy_end non-E2E Happy Moment is active")
         return
     await happy_moment_service.end_moment()
+    await _cleanup_e2e_happy_running_rows(db)
     await message.answer("E2E_HOOK_OK happy_end ended_or_not_active")
 
 
@@ -157,6 +225,7 @@ async def cmd_e2e_heist_start(
         # Restart only our own synthetic state. Do not call real end_heist here:
         # it can pay out, so replacing an active event must never mutate economy.
         heist_service.active_heists.pop(chat_id, None)
+    await _cleanup_e2e_heist_running_rows(db)
 
     now = datetime.now(heist_service.timezone)
     state = HeistState(
@@ -206,7 +275,7 @@ async def cmd_e2e_heist_start(
 
 
 @router.message(Command("e2e_heist_end"), flags=flags)
-async def cmd_e2e_heist_end(message: Message, heist_service: HeistService) -> None:
+async def cmd_e2e_heist_end(message: Message, heist_service: HeistService, db: Database) -> None:
     if not await _caller_allowed(message):
         return
     state = heist_service.get_heist_state(message.chat.id)
@@ -214,4 +283,5 @@ async def cmd_e2e_heist_end(message: Message, heist_service: HeistService) -> No
         await message.answer("E2E_HOOK_REFUSED heist_end non-E2E Heist is active in this chat")
         return
     await heist_service.end_heist(message.chat.id)
+    await _cleanup_e2e_heist_running_rows(db)
     await message.answer("E2E_HOOK_OK heist_end ended_or_not_active")

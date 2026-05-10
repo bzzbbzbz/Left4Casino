@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -73,7 +76,8 @@ async def test_e2e_hook_caller_guard_rejects_mismatch() -> None:
 
 
 class FakeDb:
-    def __init__(self) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
+        self.db_path = db_path
         self.upserts: list[dict] = []
         self.events: list[tuple] = []
 
@@ -82,6 +86,32 @@ class FakeDb:
 
     async def add_event(self, *args) -> None:  # noqa: ANN002
         self.events.append(args)
+
+
+def _create_scheduled_events_table(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE scheduled_events ("
+            "event_id TEXT PRIMARY KEY, event_type TEXT, chat_id INTEGER, scheduled_at TEXT, "
+            "timezone TEXT, source_date TEXT, status TEXT, metadata TEXT, updated_at TEXT)"
+        )
+
+
+def _insert_scheduled_event(db_path: Path, event_id: str, status: str, metadata: dict) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO scheduled_events VALUES (?,?,?,?,?,?,?,?,datetime('now'))",
+            (
+                event_id,
+                "happy_moment_start",
+                -1001,
+                "2026-05-10T10:00:00+00:00",
+                "UTC",
+                "2026-05-10",
+                status,
+                json.dumps(metadata),
+            ),
+        )
 
 
 class FakeHappyService:
@@ -155,6 +185,52 @@ async def test_happy_start_can_restart_e2e_owned_event(monkeypatch: pytest.Monke
     assert service.ended == 1
     assert service.started == 1
     assert service.active_moment.e2e_owned is True
+    assert message.answers[-1].startswith("E2E_HOOK_OK happy_start")
+
+
+@pytest.mark.asyncio
+async def test_happy_end_marks_only_e2e_running_scheduled_rows_done(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LEFT4CASINO_E2E_HOOKS_ALLOWED_USER_ID", "42")
+    db_path = tmp_path / "casino.db"
+    _create_scheduled_events_table(db_path)
+    _insert_scheduled_event(db_path, "e2e-source", "running", {"source": "e2e_hook"})
+    _insert_scheduled_event(db_path, "e2e-name", "running", {"name": "E2E Happy Moment"})
+    _insert_scheduled_event(db_path, "real", "running", {"name": "Real Happy Moment"})
+    message = FakeMessage(user_id=42)
+    service = FakeHappyService()
+    db = FakeDb(str(db_path))
+
+    await e2e_hooks.cmd_e2e_happy_end(message, service, db)  # type: ignore[arg-type]
+
+    with sqlite3.connect(db_path) as conn:
+        statuses = dict(conn.execute("SELECT event_id, status FROM scheduled_events").fetchall())
+    assert statuses == {"e2e-source": "done", "e2e-name": "done", "real": "running"}
+    assert message.answers == ["E2E_HOOK_OK happy_end ended_or_not_active"]
+
+
+@pytest.mark.asyncio
+async def test_happy_start_cleans_previous_stale_e2e_scheduled_row(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LEFT4CASINO_E2E_HOOKS_ALLOWED_USER_ID", "42")
+    db_path = tmp_path / "casino.db"
+    _create_scheduled_events_table(db_path)
+    _insert_scheduled_event(db_path, "stale-e2e", "running", {"source": "e2e_hook"})
+    _insert_scheduled_event(db_path, "real", "running", {"source": "scheduler"})
+    message = FakeMessage(user_id=42)
+    service = FakeHappyService()
+    db = FakeDb(str(db_path))
+
+    await e2e_hooks.cmd_e2e_happy_start(message, service, db)  # type: ignore[arg-type]
+
+    with sqlite3.connect(db_path) as conn:
+        statuses = dict(conn.execute("SELECT event_id, status FROM scheduled_events").fetchall())
+    assert statuses == {"stale-e2e": "done", "real": "running"}
+    assert db.upserts[0]["metadata"]
     assert message.answers[-1].startswith("E2E_HOOK_OK happy_start")
 
 

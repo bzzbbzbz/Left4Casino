@@ -1457,6 +1457,19 @@ def _reply_or_metadata_has_happy_marker(reply_texts: list[str], event: dict[str,
     return metadata.get("happy_moment_name") == "E2E Happy Moment"
 
 
+def _scheduled_metadata_indicates_e2e_hook(metadata: Any) -> bool:
+    if metadata is None:
+        return False
+    raw = str(metadata)
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return "e2e_hook" in raw or "E2E Happy Moment" in raw
+    if not isinstance(parsed, dict):
+        return False
+    return parsed.get("source") == "e2e_hook" or parsed.get("name") == "E2E Happy Moment"
+
+
 def read_schedule_readiness(db_path: Path, *, strict: bool = False) -> dict[str, Any]:
     if not db_path.exists():
         if strict:
@@ -1480,8 +1493,27 @@ def read_schedule_readiness(db_path: Path, *, strict: bool = False) -> dict[str,
             LIMIT 20
             """
         ).fetchall()
+        stale_e2e_running_rows = conn.execute(
+            """
+            SELECT event_id, event_type, chat_id, scheduled_at, timezone, source_date, status, metadata
+            FROM scheduled_events
+            WHERE status = 'running'
+            ORDER BY scheduled_at DESC
+            """
+        ).fetchall()
     result = {"scheduled_events_present": True, "rows": [dict(row) for row in rows]}
     if strict:
+        stale_e2e_running = [
+            dict(row)
+            for row in stale_e2e_running_rows
+            if _scheduled_metadata_indicates_e2e_hook(row["metadata"])
+        ]
+        if stale_e2e_running:
+            event_ids = ", ".join(str(row["event_id"]) for row in stale_e2e_running)
+            raise SmokeFailureError(
+                "schedule-readiness strict mode found stale E2E running scheduled_events: "
+                f"{event_ids}"
+            )
         present_types = {str(row["event_type"]) for row in result["rows"]}
         required_types = {"happy_moment_start", "heist_start"}
         missing = sorted(required_types.difference(present_types))
