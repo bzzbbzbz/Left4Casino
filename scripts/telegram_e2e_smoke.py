@@ -438,6 +438,8 @@ async def run_scenario(
         target_chat_id=preflight.target_chat_id,
     )
     update_offset: int | None = None
+    if not config.dry_run:
+        update_offset = await drain_current_update_offset(api)
     results: list[dict[str, Any]] = []
     for index, step in enumerate(steps, start=1):
         if index > config.max_steps:
@@ -545,6 +547,26 @@ async def run_scenario(
             }
         )
     return results
+
+
+async def drain_current_update_offset(api: BotApiProtocol) -> int | None:
+    """Advance past currently pending updates before this E2E run sends steps."""
+    current_offset: int | None = None
+    for _ in range(10):
+        updates = await api.get_updates(
+            offset=current_offset,
+            timeout=0,
+            allowed_updates=["message", "edited_message"],
+        )
+        update_ids = [
+            update["update_id"] for update in updates if isinstance(update.get("update_id"), int)
+        ]
+        if not update_ids:
+            return current_offset
+        current_offset = max(update_ids) + 1
+        if len(updates) < 100:
+            return current_offset
+    return current_offset
 
 
 async def poll_stage_replies(

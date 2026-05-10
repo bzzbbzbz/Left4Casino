@@ -162,6 +162,41 @@ class FakeReplyEconomyBot(FakeNoReplyBot):
         )
 
 
+class FakeOffsetAwareReplyBot(FakeNoReplyBot):
+    def __init__(self) -> None:
+        super().__init__()
+        self.update_id = 1
+        self.updates: list[dict[str, Any]] = [self._make_update(1, "stale prior reply")]
+        self.sent_texts: list[str] = []
+        self.update_offsets: list[int | None] = []
+
+    async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+        self.sent_texts.append(text)
+        self.update_id += 1
+        reply_text = f"fresh reply for {text.split('@', maxsplit=1)[0]}"
+        self.updates.append(self._make_update(self.update_id, reply_text, chat_id=chat_id))
+        return {"message_id": self.update_id, "chat": {"id": chat_id}, "text": text}
+
+    async def get_updates(
+        self, offset: int | None = None, timeout: int = 0, allowed_updates: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        self.update_offsets.append(offset)
+        if offset is None:
+            return list(self.updates)
+        return [update for update in self.updates if update["update_id"] >= offset]
+
+    def _make_update(self, update_id: int, text: str, *, chat_id: int = -1001) -> dict[str, Any]:
+        return {
+            "update_id": update_id,
+            "message": {
+                "message_id": update_id,
+                "chat": {"id": chat_id},
+                "from": {"id": 777, "username": "Left4CasinoStageBot"},
+                "text": text,
+            },
+        }
+
+
 def write_stage_settings(path: Path, allowed_chat_ids: list[int]) -> None:
     ids = ", ".join(str(chat_id) for chat_id in allowed_chat_ids)
     path.write_text(
@@ -312,6 +347,41 @@ def test_update_filter_accepts_only_stage_bot_and_dedupes() -> None:
     accepted = update_filter.filter_new(updates)
     assert [message["text"] for message in accepted] == ["Баланс"]
     assert update_filter.filter_new(updates) == []
+
+
+@pytest.mark.asyncio
+async def test_run_scenario_drains_stale_updates_before_sending_steps(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_user_db(db_path)
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_SCENARIO"] = "stage-parity"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    config = smoke.E2EConfig.from_env(env)
+    preflight = smoke.PreflightResult(
+        target_chat_id=-1001,
+        tester_bot_id=42,
+        tester_username="TesterBot",
+        stage_bot_id=777,
+        stage_bot_username="Left4CasinoStageBot",
+        chat_title="Stage chat",
+    )
+    api = FakeOffsetAwareReplyBot()
+
+    results = await smoke.run_scenario(config, api, preflight)
+
+    assert api.update_offsets[0] is None
+    assert 2 in api.update_offsets
+    assert [result["reply_texts"] for result in results] == [
+        ["fresh reply for /start"],
+        ["fresh reply for /balance"],
+    ]
+    assert all(
+        "stale prior reply" not in reply for result in results for reply in result["reply_texts"]
+    )
 
 
 def test_db_assertions_decode_text_money(tmp_path: Path) -> None:
