@@ -3,7 +3,7 @@
 **ID**: TASK-019  
 **Title**: Автоматический E2E smoke-тестер для staging-бота через bot-to-bot Telegram  
 **Priority**: MEDIUM  
-**Status**: SPEC_READY  
+**Status**: READY_TO_MERGE  
 **Created**: 2026-05-09  
 **Assignee**: cursor-agent
 

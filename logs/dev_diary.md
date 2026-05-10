@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-05-10: TASK-019 Telegram bot-to-bot E2E smoke tester
+
+**Decision**: Добавлен opt-in smoke runner `scripts/telegram_e2e_smoke.py`, который берёт конфигурацию только из env, выполняет safety preflight для staging-чата/БД, отправляет базовый сценарий команд с явным `@stage_bot_username` и dice `🎰`, фильтрует ответы только от stage-бота, дедуплицирует updates и поддерживает timeout/rate-limit/max-steps/dry-run.
+
+**Reasoning**: Live Telegram smoke должен проверять реальную связку Telegram API → stage bot → SQLite, но не иметь шанса задеть production. Поэтому токены не читаются из settings и не попадают в отчёт, stage DB проверяется по разрешённому префиксу, default/prod пути отбрасываются, а `dry-run` делает только preflight без сценарных сообщений.
+
+**Alternatives considered**: Использовать общий bot token из `settings.toml` — отклонено из-за риска утечки и смешивания ролей. Делать live-тест обязательным в CI — отклонено: CI не должен требовать реальный Telegram token. Использовать userbot/MTProto для inline flows — вне scope TASK-019.
+
+**Trade-offs**: Smoke runner валидирует наличие ответов stage-бота и side effects в БД, но не нажимает inline-кнопки и не делает жёсткую проверку русских текстов, чтобы не флейкать на локализации. БД-assertions используют `bot.money.decode_money`, поэтому совместимы с TASK-016 TEXT money.
+
+**Result**: `TASK-019` переведена в `READY_TO_MERGE`. Добавлены unit-тесты без реального Telegram для env parsing, safety path rejection, multiple allowed chat validation, filtering/dedupe, TEXT-money DB assertions и token redaction. Валидация зелёная: `./scripts/test.sh`, `./scripts/lint.sh`.
+
+**References**: TASK-019, `docs/specs/TASK-019_TELEGRAM_E2E_BOT_TESTER.md`, `scripts/telegram_e2e_smoke.py`, `tests/unit/test_telegram_e2e_smoke.py`, `bot/money.py`.
+
+---
+
 ## 2026-05-10: TASK-016 implementation ready for merge
 
 **Decision**: `TASK-016` implementation metadata is promoted to `READY_TO_MERGE` without archiving until merge.

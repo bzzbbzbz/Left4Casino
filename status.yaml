@@ -100,7 +100,7 @@ tasks:
     priority: HIGH
   - id: TASK-019
     name: "Telegram bot-to-bot E2E smoke tester for staging"
-    status: SPEC_READY
+    status: READY_TO_MERGE
     spec: docs/specs/TASK-019_TELEGRAM_E2E_BOT_TESTER.md
     assignee: cursor-agent
     priority: MEDIUM
