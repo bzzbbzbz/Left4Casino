@@ -794,6 +794,19 @@ def test_credit_assertion_requires_fresh_session(tmp_path: Path) -> None:
     assert result["after"]["latest_session_id"] == "fresh"
 
 
+def test_credit_reply_assertion_rejects_fallback_for_non_mock_provider() -> None:
+    replies = [{"text": "Эй, ты! Хочешь денег? Удиви меня!"}]
+
+    with pytest.raises(smoke.SmokeFailureError, match="known local fallback"):
+        smoke.assert_credit_reply_not_known_fallback(replies, ai_provider="openrouter")
+
+
+def test_credit_reply_assertion_allows_fallback_for_mock_provider() -> None:
+    replies = [{"text": "Эй, ты! Хочешь денег? Удиви меня!"}]
+
+    smoke.assert_credit_reply_not_known_fallback(replies, ai_provider="mock")
+
+
 def test_credit_assertion_supports_sessions_without_created_at(tmp_path: Path) -> None:
     db_path = tmp_path / "casino.db"
     with sqlite3.connect(db_path) as conn:

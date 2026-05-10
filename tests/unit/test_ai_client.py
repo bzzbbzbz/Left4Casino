@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from bot.config_reader import AIConfig
-from bot.services.ai import AIClient
+from bot.services.ai import DEFAULT_AI_TIMEOUT_SECONDS, AIClient, AIServiceError
 
 pytestmark = pytest.mark.unit
 
@@ -41,6 +41,7 @@ async def test_openrouter_provider_uses_llm_greeting_with_config_api_key(monkeyp
     openai_cls.assert_called_once_with(
         base_url="https://openrouter.ai/api/v1",
         api_key="test-openrouter-key",
+        timeout=DEFAULT_AI_TIMEOUT_SECONDS,
     )
     create.assert_awaited_once()
 
@@ -60,8 +61,8 @@ async def test_mock_provider_uses_local_fallback_without_llm(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_real_ai_error_uses_safe_greeting_fallback(monkeypatch) -> None:
-    """Real provider errors are allowed to degrade to safe non-secret fallback."""
+async def test_real_ai_error_raises_sanitized_greeting_error(monkeypatch) -> None:
+    """Real provider errors must not degrade to fake greeting fallback."""
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     create = AsyncMock(side_effect=RuntimeError("upstream unavailable"))
@@ -75,9 +76,9 @@ async def test_real_ai_error_uses_safe_greeting_fallback(monkeypatch) -> None:
         client = AIClient(
             AIConfig(provider="openai", api_key="test-openai-key", model="gpt-4o-mini")
         )
-        greeting = await client.generate_initial_greeting()
+        with pytest.raises(AIServiceError, match="AI greeting generation failed"):
+            await client.generate_initial_greeting()
 
-    assert greeting == "Эй, ты! Хочешь денег? Удиви меня!"
     create.assert_awaited_once()
 
 
@@ -133,9 +134,53 @@ async def test_greeting_error_log_omits_raw_exception_message(monkeypatch, caplo
         client = AIClient(
             AIConfig(provider="openai", api_key="test-openai-key", model="gpt-4o-mini")
         )
-        greeting = await client.generate_initial_greeting()
+        with pytest.raises(AIServiceError, match="AI greeting generation failed"):
+            await client.generate_initial_greeting()
 
-    assert greeting == "Эй, ты! Хочешь денег? Удиви меня!"
     assert "RuntimeError" in caplog.records[-1].__dict__.get("error_type", "")
     assert "sk-test-secret" not in caplog.text
     assert "leaked context" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_real_response_error_raises_without_fake_credit(monkeypatch) -> None:
+    """Real provider response errors must not return fake completion_data."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    create = AsyncMock(side_effect=RuntimeError("upstream unavailable"))
+    openai_cls = MagicMock(
+        return_value=SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+    )
+
+    with patch("bot.services.ai.AsyncOpenAI", openai_cls):
+        client = AIClient(
+            AIConfig(provider="openai", api_key="test-openai-key", model="gpt-4o-mini")
+        )
+        with pytest.raises(AIServiceError, match="AI response generation failed"):
+            await client.generate_response([{"role": "user", "content": "ответ"}])
+
+    create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_real_response_invalid_json_raises_without_fake_credit(monkeypatch) -> None:
+    """Invalid real-provider response must not be converted into a credit grant."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    create = AsyncMock(return_value=_chat_response("not json"))
+    openai_cls = MagicMock(
+        return_value=SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+    )
+
+    with patch("bot.services.ai.AsyncOpenAI", openai_cls):
+        client = AIClient(
+            AIConfig(provider="openai", api_key="test-openai-key", model="gpt-4o-mini")
+        )
+        with pytest.raises(AIServiceError, match="invalid JSON"):
+            await client.generate_response([{"role": "user", "content": "ответ"}])
+
+    create.assert_awaited_once()

@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+DEFAULT_AI_TIMEOUT_SECONDS = 20.0
 
 _PLACEHOLDER_API_KEYS = {
     "",
@@ -45,6 +46,10 @@ def _exception_type(error: Exception) -> str:
     return type(error).__name__
 
 
+class AIServiceError(RuntimeError):
+    """Sanitized AI provider failure safe to surface to handlers/logs."""
+
+
 class AIClient:
     def __init__(self, config):
         self.config = config
@@ -78,9 +83,10 @@ class AIClient:
             self.client = AsyncOpenAI(
                 base_url=base_url,
                 api_key=api_key,
+                timeout=DEFAULT_AI_TIMEOUT_SECONDS,
             )
         else:
-            self.client = AsyncOpenAI(api_key=api_key)
+            self.client = AsyncOpenAI(api_key=api_key, timeout=DEFAULT_AI_TIMEOUT_SECONDS)
 
     async def generate_initial_greeting(self) -> str:
         if self.provider == "mock":
@@ -149,14 +155,15 @@ class AIClient:
                 temperature=0.6,
             )
             content = response.choices[0].message.content.strip()
-            # Fallback if empty
             if not content:
-                return f"Ну что, {selected_task}. Живо!"
+                raise AIServiceError("AI greeting generation returned empty content")
             return content
 
         except Exception as e:
             logger.error("Error generating greeting", extra={"error_type": _exception_type(e)})
-            return "Эй, ты! Хочешь денег? Удиви меня!"
+            if isinstance(e, AIServiceError):
+                raise
+            raise AIServiceError("AI greeting generation failed") from None
 
     def _calculate_ai_score(self, text: str) -> int:
         """
@@ -293,8 +300,7 @@ class AIClient:
                 reward = int(data.get("reward", 15))
             except Exception:
                 logger.warning("Failed to parse JSON from AI response")
-                text = "Ты меня утомил. Бери мелочь и уходи."
-                reward = 15
+                raise AIServiceError("AI response generation returned invalid JSON") from None
 
             # Ensure reward is within bounds
             try:
@@ -309,7 +315,6 @@ class AIClient:
 
         except Exception as e:
             logger.error("Error generating response", extra={"error_type": _exception_type(e)})
-            return {
-                "content": "Банк закрыт на переучет. Проваливай.",
-                "completion_data": {"done": True, "score": 0, "reward": 1, "comment": "Ошибка API"},
-            }
+            if isinstance(e, AIServiceError):
+                raise
+            raise AIServiceError("AI response generation failed") from None

@@ -47,6 +47,10 @@ DEFAULT_PROD_DB_PATHS = {
     Path("/root/n8n-install/python-runner/telegram-casino-bot/bot/casino.db"),
     Path("/root/n8n-install/python-runner/bot/casino.db"),
 }
+KNOWN_CREDIT_FALLBACK_TEXTS = {
+    "Эй, ты! Хочешь денег? Удиви меня!",
+    "Ну что, расскажи анекдот. Живо!",
+}
 
 
 class ConfigError(ValueError):
@@ -145,6 +149,7 @@ class E2EConfig:
 class SafeStageSettings:
     allowed_chat_ids: tuple[int, ...]
     block_private_chats: bool | None
+    ai_provider: str
 
 
 @dataclass(frozen=True)
@@ -316,7 +321,15 @@ def parse_safe_stage_settings(settings_path: Path) -> SafeStageSettings:
     block_private = restrictions.get("block_private_chats")
     if block_private is not None and not isinstance(block_private, bool):
         raise ConfigError("chat_restrictions.block_private_chats must be boolean when set")
-    return SafeStageSettings(allowed_chat_ids=allowed_chat_ids, block_private_chats=block_private)
+    ai_config = data.get("ai", {})
+    ai_provider = "mock"
+    if isinstance(ai_config, dict):
+        ai_provider = str(ai_config.get("provider") or "mock").strip().lower() or "mock"
+    return SafeStageSettings(
+        allowed_chat_ids=allowed_chat_ids,
+        block_private_chats=block_private,
+        ai_provider=ai_provider,
+    )
 
 
 def resolve_target_chat_id(config: E2EConfig, settings: SafeStageSettings) -> int:
@@ -442,6 +455,7 @@ def build_scenario_steps(config: E2EConfig) -> list[ScenarioStep]:
 async def run_scenario(
     config: E2EConfig, api: BotApiProtocol, preflight: PreflightResult
 ) -> list[dict[str, Any]]:
+    settings = parse_safe_stage_settings(config.stage_settings_path)
     steps = build_scenario_steps(config)
     if len(steps) > config.max_steps:
         raise ConfigError("scenario step count exceeds configured max steps")
@@ -548,6 +562,10 @@ async def run_scenario(
                     config.stage_db_path, preflight.tester_bot_id, expected=0
                 )
             elif step.name == "credit-entry":
+                assert_credit_reply_not_known_fallback(
+                    replies,
+                    ai_provider=settings.ai_provider,
+                )
                 db_assertion = assert_credit_session_started(
                     config.stage_db_path, preflight.tester_bot_id, before=credit_before
                 )
@@ -888,6 +906,20 @@ def assert_credit_session_started(
         "before": before,
         "after": after,
     }
+
+
+def assert_credit_reply_not_known_fallback(
+    replies: list[dict[str, Any]], *, ai_provider: str
+) -> None:
+    """Non-mock economy E2E must fail if /credit returns a known local fallback task."""
+    if ai_provider == "mock":
+        return
+    reply_texts = {_message_text(reply).strip() for reply in replies}
+    fallback_hits = reply_texts.intersection(KNOWN_CREDIT_FALLBACK_TEXTS)
+    if fallback_hits:
+        raise SmokeFailureError(
+            "/credit returned known local fallback text while ai.provider is non-mock"
+        )
 
 
 def assert_bankruptcy_recorded(
