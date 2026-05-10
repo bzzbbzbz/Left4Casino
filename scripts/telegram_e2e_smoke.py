@@ -633,6 +633,23 @@ def assert_stage_db_state(
     return {"before": before, "after": after}
 
 
+def stage_parity_db_assertions(
+    db_path: Path, tester_user_id: int, before: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Return stage-parity DB context without requiring scenario mutation.
+
+    Stage-parity only checks that /start no longer exposes legacy UI and that
+    /balance answers in the live stage chat.  Unlike the smoke scenario, those
+    commands may legitimately leave the tester's balance and event count
+    unchanged, so final DB mutation checks would be a false negative.
+    """
+    return {
+        "skipped": "stage-parity validates command replies without requiring DB mutation",
+        "before": before,
+        "after": snapshot_user_state(db_path, tester_user_id),
+    }
+
+
 def dice_step_db_changed(db_path: Path, tester_user_id: int, before: dict[str, Any] | None) -> bool:
     """Return True when the dice step visibly mutated the tester's DB state.
 
@@ -977,6 +994,10 @@ async def execute(
     report.steps = await run_scenario(config, api, preflight)
     if config.dry_run:
         report.db_assertions = {"skipped": "dry-run sends no scenario messages"}
+    elif config.scenario == "stage-parity":
+        report.db_assertions = stage_parity_db_assertions(
+            config.stage_db_path, preflight.tester_bot_id, before=before
+        )
     else:
         report.db_assertions = assert_stage_db_state(
             config.stage_db_path, preflight.tester_bot_id, before=before

@@ -334,6 +334,37 @@ def test_db_assertions_decode_text_money(tmp_path: Path) -> None:
     assert result["after"]["event_count"] == 1
 
 
+def test_smoke_db_assertion_still_requires_state_delta(tmp_path: Path) -> None:
+    db_path = tmp_path / "casino.db"
+    create_user_db(db_path)
+    before = smoke.snapshot_user_state(db_path, 42)
+
+    with pytest.raises(smoke.SmokeFailureError, match="did not record balance/event changes"):
+        smoke.assert_stage_db_state(db_path, 42, before=before)
+
+
+@pytest.mark.asyncio
+async def test_stage_parity_execute_does_not_require_db_state_delta(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_user_db(db_path)
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_SCENARIO"] = "stage-parity"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    config = smoke.E2EConfig.from_env(env)
+
+    report = await smoke.execute(config, FakeReplyEconomyBot(db_path), stage_api=None)
+
+    assert report.ok is True
+    assert [step["name"] for step in report.steps] == ["start-no-legacy", "balance"]
+    assert report.db_assertions is not None
+    assert report.db_assertions["skipped"].startswith("stage-parity validates")
+    assert report.db_assertions["before"] == report.db_assertions["after"]
+
+
 def test_credit_assertion_requires_fresh_session(tmp_path: Path) -> None:
     db_path = tmp_path / "casino.db"
     create_user_db(db_path)
