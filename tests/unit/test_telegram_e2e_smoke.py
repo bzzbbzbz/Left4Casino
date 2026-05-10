@@ -105,7 +105,21 @@ class FakeReplyEconomyBot(FakeNoReplyBot):
         self.sent_count += 1
         if self.db_path is not None:
             with sqlite3.connect(self.db_path) as conn:
-                if self.sent_count >= 2:
+                row = conn.execute(
+                    "SELECT balance FROM users WHERE user_id = ?", (self.user_id,)
+                ).fetchone()
+                balance = row[0] if row else "0"
+                if balance == "1":
+                    conn.execute(
+                        "UPDATE users SET balance = '0', bankruptcy_count = bankruptcy_count + 1 "
+                        "WHERE user_id = ?",
+                        (self.user_id,),
+                    )
+                    conn.execute(
+                        "INSERT INTO event_history (user_id, event_type) VALUES (?,?)",
+                        (self.user_id, "bankruptcy"),
+                    )
+                elif self.sent_count >= 2:
                     conn.execute(
                         "UPDATE users SET balance = '57' WHERE user_id = ?", (self.user_id,)
                     )
@@ -183,7 +197,8 @@ def create_user_db(db_path: Path, user_id: int = 42) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "CREATE TABLE users "
-            "(user_id INTEGER PRIMARY KEY, balance TEXT, safe_balance TEXT, bid TEXT)"
+            "(user_id INTEGER PRIMARY KEY, balance TEXT, safe_balance TEXT, bid TEXT, "
+            "state TEXT DEFAULT 'IDLE', bankruptcy_count INTEGER DEFAULT 0)"
         )
         conn.execute("CREATE TABLE event_history (user_id INTEGER, event_type TEXT)")
         conn.execute(
@@ -251,7 +266,9 @@ def test_target_chat_required_when_multiple_allowed_ids(tmp_path: Path) -> None:
 
 
 def test_update_filter_accepts_only_stage_bot_and_dedupes() -> None:
-    update_filter = smoke.StageReplyFilter(stage_bot_username="StageBot", stage_bot_id=42)
+    update_filter = smoke.StageReplyFilter(
+        stage_bot_username="StageBot", stage_bot_id=42, target_chat_id=-1001
+    )
     updates: list[dict[str, Any]] = [
         {
             "update_id": 1,
@@ -280,6 +297,15 @@ def test_update_filter_accepts_only_stage_bot_and_dedupes() -> None:
                 "text": "duplicate",
             },
         },
+        {
+            "update_id": 3,
+            "message": {
+                "message_id": 12,
+                "chat": {"id": -2002},
+                "from": {"id": 42, "username": "StageBot"},
+                "text": "cross-chat noise",
+            },
+        },
     ]
 
     accepted = update_filter.filter_new(updates)
@@ -306,6 +332,29 @@ def test_db_assertions_decode_text_money(tmp_path: Path) -> None:
     assert result["after"]["balance"] == 10**24
     assert result["after"]["safe_balance"] == 250
     assert result["after"]["event_count"] == 1
+
+
+def test_credit_assertion_requires_fresh_session(tmp_path: Path) -> None:
+    db_path = tmp_path / "casino.db"
+    create_user_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO ai_credit_sessions (session_id, user_id, status) VALUES (?,?,?)",
+            ("stale", 42, "active"),
+        )
+    before = smoke.snapshot_credit_sessions(db_path, 42)
+
+    with pytest.raises(smoke.SmokeFailureError, match="fresh active"):
+        smoke.assert_credit_session_started(db_path, 42, before=before)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO ai_credit_sessions (session_id, user_id, status) VALUES (?,?,?)",
+            ("fresh", 42, "active"),
+        )
+
+    result = smoke.assert_credit_session_started(db_path, 42, before=before)
+    assert result["after"]["latest_session_id"] == "fresh"
 
 
 def test_report_does_not_include_token(tmp_path: Path) -> None:
@@ -379,9 +428,25 @@ def test_db_mutation_guard_requires_explicit_env(tmp_path: Path) -> None:
     env = base_env(tmp_path, settings_path, db_path)
     env["TELEGRAM_E2E_ALLOW_DB_MUTATION"] = "1"
     config = smoke.E2EConfig.from_env(env)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE users SET safe_balance = '7', bid = '9', state = 'IN_DIALOGUE'")
+        conn.execute(
+            "INSERT INTO ai_credit_sessions (session_id, user_id, status) VALUES (?,?,?)",
+            ("old-active", 42, "active"),
+        )
     smoke.set_tester_balance_for_stage(config, 42, 0)
 
-    assert smoke.snapshot_user_state(db_path, 42)["balance"] == 0  # type: ignore[index]
+    state = smoke.snapshot_user_state(db_path, 42)
+    assert state["balance"] == 0  # type: ignore[index]
+    assert state["safe_balance"] == 0  # type: ignore[index]
+    assert state["bid"] == 1  # type: ignore[index]
+    with sqlite3.connect(db_path) as conn:
+        user_state = conn.execute("SELECT state FROM users WHERE user_id = 42").fetchone()[0]
+        credit_status = conn.execute(
+            "SELECT status FROM ai_credit_sessions WHERE session_id = 'old-active'"
+        ).fetchone()[0]
+    assert user_state == "IDLE"
+    assert credit_status == "terminated"
 
 
 @pytest.mark.asyncio
@@ -477,7 +542,8 @@ async def test_economy_safe_deposit_withdraw_steps_with_db_guard(
     assert by_name["bid-all-in"]["db_assertion"] == {"bid": 50, "balance": 50}
     assert by_name["safe-deposit"]["db_assertion"]["safe_balance"] == 1
     assert by_name["safe-withdraw"]["db_assertion"]["safe_balance"] == 0
-    assert by_name["credit-entry"]["db_assertion"] == {"credit_session_status": "active"}
+    assert by_name["credit-entry"]["db_assertion"]["after"]["latest_status"] == "active"
+    assert by_name["spin-until-bankruptcy"]["db_assertion"]["after_bankruptcy_events"] == 1
 
 
 @pytest.mark.asyncio
@@ -534,3 +600,23 @@ def test_schedule_readiness_reports_rows_read_only(tmp_path: Path) -> None:
 
     assert report["scheduled_events_present"] is True
     assert report["rows"][0]["event_type"] == "happy_moment_start"
+
+    with pytest.raises(smoke.SmokeFailureError, match="missing event types"):
+        smoke.read_schedule_readiness(db_path, strict=True)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO scheduled_events VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "e2",
+                "heist_start",
+                -1001,
+                "2026-05-10T11:00:00",
+                "UTC",
+                "2026-05-10",
+                "scheduled",
+                "{}",
+            ),
+        )
+    strict_report = smoke.read_schedule_readiness(db_path, strict=True)
+    assert strict_report["strict"] is True

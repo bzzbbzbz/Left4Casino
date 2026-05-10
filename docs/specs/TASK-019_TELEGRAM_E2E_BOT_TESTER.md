@@ -172,6 +172,11 @@ python scripts/telegram_e2e_smoke.py
 
 # Read-only scheduler readiness report for happy moment/heist scheduled_events rows.
 TELEGRAM_E2E_SCENARIO=schedule-readiness python scripts/telegram_e2e_smoke.py
+
+# Strict scheduler readiness: fail unless happy_moment_start and heist_start rows exist.
+TELEGRAM_E2E_SCENARIO=schedule-readiness \
+TELEGRAM_E2E_SCHEDULE_STRICT=1 \
+python scripts/telegram_e2e_smoke.py
 ```
 
 `TELEGRAM_E2E_STAGE_BOT_TOKEN` is optional and never logged; when present it is used only
@@ -179,6 +184,9 @@ to call `getMyCommands` for the stage bot command-menu validation. The tester to
 query another bot's command menu, so this check is skipped unless the stage token is supplied.
 The runner does not force happy moment/heist schedules automatically; forcing schedules requires
 stage runtime config/restart outside this script.
+Economy DB setup is repeatable only with `TELEGRAM_E2E_ALLOW_DB_MUTATION=1`: it resets the
+tester balance, bid, safe balance, state and old active credit sessions under the stage DB guard.
+Credit and bankruptcy checks compare against before snapshots so stale rows cannot satisfy them.
 
 Ожидаемый результат:
 - сценарий завершается успешно;

@@ -18,6 +18,18 @@
 
 ---
 
+## 2026-05-10: TASK-019 E2E blocker fixes
+
+**Decision**: Ужесточены enhanced E2E checks: фильтр ответов теперь ограничен stage chat id, economy setup полностью сбрасывает tester state под stage DB guard, `/credit` требует свежую сессию относительно before snapshot, добавлен bounded spin-to-bankruptcy, а `schedule-readiness` получил strict mode через `TELEGRAM_E2E_SCHEDULE_STRICT=1`.
+
+**Reasoning**: Это убирает false-pass от старых `ai_credit_sessions`, делает economy-сценарий повторяемым, проверяет bankruptcy детерминированно насколько позволяет Telegram dice, и не смешивает ответы из других чатов.
+
+**Result**: Unit-тесты расширены на stale credit sessions, reset state/old sessions, cross-chat filtering, bankruptcy и strict schedule readiness. Live Telegram и реальные stage/prod DB не запускались.
+
+**References**: TASK-019, commit `51e4ffb`, `scripts/telegram_e2e_smoke.py`, `tests/unit/test_telegram_e2e_smoke.py`.
+
+---
+
 ## 2026-05-10: TASK-019 Telegram bot-to-bot E2E smoke tester
 
 **Decision**: Добавлен opt-in smoke runner `scripts/telegram_e2e_smoke.py`, который берёт конфигурацию только из env, выполняет safety preflight для staging-чата/БД, отправляет базовый сценарий команд с явным `@stage_bot_username` и dice `🎰`, фильтрует ответы только от stage-бота, дедуплицирует updates и поддерживает timeout/rate-limit/max-steps/dry-run.

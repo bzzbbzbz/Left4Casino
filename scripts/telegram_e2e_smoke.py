@@ -38,6 +38,7 @@ ENV_ALLOWED_DB_PREFIX = "TELEGRAM_E2E_ALLOWED_DB_PREFIX"
 ENV_SCENARIO = "TELEGRAM_E2E_SCENARIO"
 ENV_ALLOW_DB_MUTATION = "TELEGRAM_E2E_ALLOW_DB_MUTATION"
 ENV_MAX_SPINS_UNTIL_WIN = "TELEGRAM_E2E_MAX_SPINS_UNTIL_WIN"
+ENV_SCHEDULE_STRICT = "TELEGRAM_E2E_SCHEDULE_STRICT"
 
 DEFAULT_STAGE_PREFIX = "/opt/left4casino/python-runner-stage"
 DEFAULT_PROD_DB_PATHS = {
@@ -70,6 +71,7 @@ class E2EConfig:
     scenario: str = "smoke"
     allow_db_mutation: bool = False
     max_spins_until_win: int = 20
+    schedule_strict: bool = False
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> E2EConfig:
@@ -88,6 +90,7 @@ class E2EConfig:
         scenario = env.get(ENV_SCENARIO, "smoke").strip() or "smoke"
         allow_db_mutation = _parse_bool(env.get(ENV_ALLOW_DB_MUTATION, "false"))
         max_spins = _optional_int(env.get(ENV_MAX_SPINS_UNTIL_WIN), ENV_MAX_SPINS_UNTIL_WIN) or 20
+        schedule_strict = _parse_bool(env.get(ENV_SCHEDULE_STRICT, "false"))
         if timeout <= 0:
             raise ConfigError(f"{ENV_TIMEOUT} must be > 0")
         if rate_limit < 0:
@@ -113,6 +116,7 @@ class E2EConfig:
             scenario=scenario,
             allow_db_mutation=allow_db_mutation,
             max_spins_until_win=max_spins,
+            schedule_strict=schedule_strict,
         )
 
     def redacted(self) -> dict[str, Any]:
@@ -232,9 +236,16 @@ class TelegramBotApi:
 
 
 class StageReplyFilter:
-    def __init__(self, *, stage_bot_username: str, stage_bot_id: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        stage_bot_username: str,
+        stage_bot_id: int | None = None,
+        target_chat_id: int | None = None,
+    ) -> None:
         self.stage_bot_username = _normalize_username(stage_bot_username).lower()
         self.stage_bot_id = stage_bot_id
+        self.target_chat_id = target_chat_id
         self.seen_update_ids: set[int] = set()
         self.seen_message_keys: set[tuple[int, int]] = set()
 
@@ -252,6 +263,8 @@ class StageReplyFilter:
             if not self._from_stage_bot(message):
                 continue
             chat_id = _deep_get(message, "chat", "id")
+            if self.target_chat_id is not None and chat_id != self.target_chat_id:
+                continue
             message_id = message.get("message_id")
             if isinstance(chat_id, int) and isinstance(message_id, int):
                 key = (chat_id, message_id)
@@ -383,6 +396,8 @@ def build_economy_steps(stage_bot_username: str, *, include_spin_loop: bool) -> 
         ScenarioStep("safe-withdraw", "message", f"/safe{suffix} -1"),
         ScenarioStep("setup-zero-balance", "db_set_balance", setup_balance=0),
         ScenarioStep("credit-entry", "message", f"/credit{suffix}"),
+        ScenarioStep("setup-bankruptcy-balance", "db_set_balance", setup_balance=1),
+        ScenarioStep("spin-until-bankruptcy", "spin_until_bankruptcy", emoji="🎰"),
     ]
     if include_spin_loop:
         steps.extend(
@@ -413,7 +428,9 @@ async def run_scenario(
     if len(steps) > config.max_steps:
         raise ConfigError("scenario step count exceeds configured max steps")
     reply_filter = StageReplyFilter(
-        stage_bot_username=preflight.stage_bot_username, stage_bot_id=preflight.stage_bot_id
+        stage_bot_username=preflight.stage_bot_username,
+        stage_bot_id=preflight.stage_bot_id,
+        target_chat_id=preflight.target_chat_id,
     )
     update_offset: int | None = None
     results: list[dict[str, Any]] = []
@@ -422,6 +439,7 @@ async def run_scenario(
             raise SmokeFailureError("max steps exceeded")
         sent: dict[str, Any] | None = None
         dice_before: dict[str, Any] | None = None
+        credit_before: dict[str, Any] | None = None
         db_validated = False
         db_assertion: dict[str, Any] | None = None
         if config.dry_run:
@@ -431,7 +449,7 @@ async def run_scenario(
             if step.action == "db_set_balance":
                 if step.setup_balance is None:
                     raise SmokeFailureError(f"missing setup balance for step {step.name}")
-                set_tester_balance_for_stage(config, preflight.tester_bot_id, step.setup_balance)
+                reset_tester_state_for_stage(config, preflight.tester_bot_id, step.setup_balance)
                 db_assertion = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
                 replies = []
                 sent = {"db_mutation": "set_balance"}
@@ -457,6 +475,17 @@ async def run_scenario(
                 update_offset = result.pop("update_offset", update_offset)
                 results.append(result)
                 continue
+            if step.action == "spin_until_bankruptcy":
+                result = await run_spin_until_bankruptcy(
+                    config, api, preflight, reply_filter, update_offset
+                )
+                update_offset = result.pop("update_offset", update_offset)
+                results.append(result)
+                continue
+            if step.name == "credit-entry":
+                credit_before = snapshot_credit_sessions(
+                    config.stage_db_path, preflight.tester_bot_id
+                )
             if step.action == "message" and step.text is not None:
                 sent = await api.send_message(preflight.target_chat_id, step.text)
             elif step.action == "message_optional_reply" and step.text is not None:
@@ -497,7 +526,7 @@ async def run_scenario(
                 )
             elif step.name == "credit-entry":
                 db_assertion = assert_credit_session_started(
-                    config.stage_db_path, preflight.tester_bot_id
+                    config.stage_db_path, preflight.tester_bot_id, before=credit_before
                 )
         results.append(
             {
@@ -547,8 +576,12 @@ def snapshot_user_state(db_path: Path, tester_user_id: int) -> dict[str, Any] | 
         return None
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        user_columns = get_table_columns(conn, "users")
+        select_columns = "user_id, balance, safe_balance, bid"
+        if "bankruptcy_count" in user_columns:
+            select_columns += ", bankruptcy_count"
         user = conn.execute(
-            "SELECT user_id, balance, safe_balance, bid FROM users WHERE user_id = ?",
+            f"SELECT {select_columns} FROM users WHERE user_id = ?",
             (tester_user_id,),
         ).fetchone()
         if user is None:
@@ -557,13 +590,26 @@ def snapshot_user_state(db_path: Path, tester_user_id: int) -> dict[str, Any] | 
             "SELECT COUNT(*) FROM event_history WHERE user_id = ?",
             (tester_user_id,),
         ).fetchone()[0]
-    return {
+        bankruptcy_events = conn.execute(
+            "SELECT COUNT(*) FROM event_history WHERE user_id = ? AND event_type = 'bankruptcy'",
+            (tester_user_id,),
+        ).fetchone()[0]
+    state = {
         "user_id": user["user_id"],
         "balance": decode_money(user["balance"]),
         "safe_balance": decode_money(user["safe_balance"]),
         "bid": decode_money(user["bid"]),
         "event_count": int(event_count),
+        "bankruptcy_events": int(bankruptcy_events),
     }
+    if "bankruptcy_count" in user.keys():
+        state["bankruptcy_count"] = int(user["bankruptcy_count"] or 0)
+    return state
+
+
+def get_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
 
 
 def assert_stage_db_state(
@@ -614,18 +660,54 @@ def assert_no_legacy_start_reply(replies: list[dict[str, Any]]) -> None:
 
 
 def set_tester_balance_for_stage(config: E2EConfig, tester_user_id: int, balance: int) -> None:
+    reset_tester_state_for_stage(config, tester_user_id, balance)
+
+
+def reset_tester_state_for_stage(config: E2EConfig, tester_user_id: int, balance: int) -> None:
     if not config.allow_db_mutation:
         raise ConfigError(f"{ENV_ALLOW_DB_MUTATION}=1 is required for DB mutation steps")
     validate_stage_db_path(config.stage_db_path, config.allowed_db_prefix)
     with sqlite3.connect(config.stage_db_path) as conn:
+        user_columns = get_table_columns(conn, "users")
+        insert_columns = ["user_id", "balance", "safe_balance", "bid"]
+        insert_values: list[Any] = [tester_user_id, str(balance), "0", "1"]
+        if "state" in user_columns:
+            insert_columns.append("state")
+            insert_values.append("IDLE")
+        update_parts = ["balance = excluded.balance", "safe_balance = '0'", "bid = '1'"]
+        if "state" in user_columns:
+            update_parts.append("state = 'IDLE'")
+        placeholders = ", ".join("?" for _ in insert_columns)
         conn.execute(
-            """
-            INSERT INTO users (user_id, balance, safe_balance, bid)
-            VALUES (?, ?, COALESCE((SELECT safe_balance FROM users WHERE user_id = ?), '0'), '1')
-            ON CONFLICT(user_id) DO UPDATE SET balance = excluded.balance, bid = '1'
+            f"""
+            INSERT INTO users ({", ".join(insert_columns)})
+            VALUES ({placeholders})
+            ON CONFLICT(user_id) DO UPDATE SET {", ".join(update_parts)}
             """,
-            (tester_user_id, str(balance), tester_user_id),
+            insert_values,
         )
+        if table_exists(conn, "ai_credit_sessions"):
+            conn.execute(
+                """
+                UPDATE ai_credit_sessions
+                SET status = 'terminated', finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+                WHERE user_id = ? AND status IN ('active', 'processing')
+                """
+                if "finished_at" in get_table_columns(conn, "ai_credit_sessions")
+                else """
+                UPDATE ai_credit_sessions
+                SET status = 'terminated'
+                WHERE user_id = ? AND status IN ('active', 'processing')
+                """,
+                (tester_user_id,),
+            )
+
+
+def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
+    ).fetchone()
+    return row is not None
 
 
 def assert_bid_all_in(db_path: Path, tester_user_id: int) -> dict[str, Any]:
@@ -646,15 +728,70 @@ def assert_safe_balance(db_path: Path, tester_user_id: int, *, expected: int) ->
     return {"safe_balance": state["safe_balance"], "balance": state["balance"]}
 
 
-def assert_credit_session_started(db_path: Path, tester_user_id: int) -> dict[str, Any]:
+def snapshot_credit_sessions(db_path: Path, tester_user_id: int) -> dict[str, Any]:
+    if not db_path.exists():
+        return {"count": 0, "latest_session_id": None, "latest_status": None}
     with sqlite3.connect(db_path) as conn:
+        if not table_exists(conn, "ai_credit_sessions"):
+            return {"count": 0, "latest_session_id": None, "latest_status": None}
+        count = conn.execute(
+            "SELECT COUNT(*) FROM ai_credit_sessions WHERE user_id = ?",
+            (tester_user_id,),
+        ).fetchone()[0]
         row = conn.execute(
-            "SELECT status FROM ai_credit_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            """
+            SELECT session_id, status
+            FROM ai_credit_sessions
+            WHERE user_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
             (tester_user_id,),
         ).fetchone()
-    if row is None:
-        raise SmokeFailureError("/credit did not create an AI credit session")
-    return {"credit_session_status": row[0]}
+    return {
+        "count": int(count),
+        "latest_session_id": row[0] if row else None,
+        "latest_status": row[1] if row else None,
+    }
+
+
+def assert_credit_session_started(
+    db_path: Path, tester_user_id: int, before: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    before = before or {"count": 0, "latest_session_id": None, "latest_status": None}
+    after = snapshot_credit_sessions(db_path, tester_user_id)
+    accepted_statuses = {"active", "processing"}
+    created_new_session = (
+        after["count"] > before["count"]
+        and after["latest_session_id"] != before["latest_session_id"]
+        and after["latest_status"] in accepted_statuses
+    )
+    if not created_new_session:
+        raise SmokeFailureError("/credit did not create a fresh active AI credit session")
+    return {
+        "before": before,
+        "after": after,
+    }
+
+
+def assert_bankruptcy_recorded(
+    db_path: Path, tester_user_id: int, before: dict[str, Any] | None
+) -> dict[str, Any]:
+    after = snapshot_user_state(db_path, tester_user_id)
+    if after is None:
+        raise SmokeFailureError("tester user missing after bankruptcy scenario")
+    before_bankruptcy_events = int((before or {}).get("bankruptcy_events", 0))
+    after_bankruptcy_events = count_user_events(db_path, tester_user_id, "bankruptcy")
+    before_count = int((before or {}).get("bankruptcy_count", 0))
+    after_count = int(after.get("bankruptcy_count", before_count))
+    if after_bankruptcy_events <= before_bankruptcy_events and after_count <= before_count:
+        raise SmokeFailureError("bankruptcy event/count was not recorded")
+    return {
+        "before_bankruptcy_events": before_bankruptcy_events,
+        "after_bankruptcy_events": after_bankruptcy_events,
+        "before_bankruptcy_count": before_count,
+        "after_bankruptcy_count": after_count,
+    }
 
 
 def count_user_events(db_path: Path, tester_user_id: int, event_type: str) -> int:
@@ -716,14 +853,61 @@ async def run_spin_until_win(
     raise SmokeFailureError(f"no slot win after {config.max_spins_until_win} spins")
 
 
-def read_schedule_readiness(db_path: Path) -> dict[str, Any]:
+async def run_spin_until_bankruptcy(
+    config: E2EConfig,
+    api: BotApiProtocol,
+    preflight: PreflightResult,
+    reply_filter: StageReplyFilter,
+    update_offset: int | None,
+) -> dict[str, Any]:
+    before = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
+    current_offset = update_offset
+    reply_texts: list[str] = []
+    sent_ids: list[int] = []
+    for spin in range(1, config.max_spins_until_win + 1):
+        reset_tester_state_for_stage(config, preflight.tester_bot_id, 1)
+        sent = await api.send_dice(preflight.target_chat_id, "🎰")
+        if isinstance(sent.get("message_id"), int):
+            sent_ids.append(sent["message_id"])
+        await asyncio.sleep(config.rate_limit_seconds)
+        replies, current_offset = await poll_stage_replies(
+            api=api,
+            reply_filter=reply_filter,
+            update_offset=current_offset,
+            timeout_seconds=config.timeout_seconds,
+        )
+        reply_texts.extend(_message_text(reply) for reply in replies)
+        try:
+            assertion = assert_bankruptcy_recorded(
+                config.stage_db_path, preflight.tester_bot_id, before
+            )
+        except SmokeFailureError:
+            continue
+        return {
+            "name": "spin-until-bankruptcy",
+            "action": "spin_until_bankruptcy",
+            "sent_message_id": sent_ids[-1] if sent_ids else None,
+            "reply_count": len(reply_texts),
+            "reply_texts": reply_texts,
+            "db_validated": True,
+            "db_assertion": {"spins": spin, **assertion},
+            "update_offset": current_offset,
+        }
+    raise SmokeFailureError(f"no bankruptcy after {config.max_spins_until_win} controlled spins")
+
+
+def read_schedule_readiness(db_path: Path, *, strict: bool = False) -> dict[str, Any]:
     if not db_path.exists():
+        if strict:
+            raise SmokeFailureError("schedule-readiness strict mode requires an existing stage DB")
         return {"scheduled_events_present": False, "rows": []}
     with sqlite3.connect(db_path) as conn:
         table = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_events'"
         ).fetchone()
         if table is None:
+            if strict:
+                raise SmokeFailureError("schedule-readiness strict mode requires scheduled_events")
             return {"scheduled_events_present": False, "rows": []}
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -735,7 +919,18 @@ def read_schedule_readiness(db_path: Path) -> dict[str, Any]:
             LIMIT 20
             """
         ).fetchall()
-    return {"scheduled_events_present": True, "rows": [dict(row) for row in rows]}
+    result = {"scheduled_events_present": True, "rows": [dict(row) for row in rows]}
+    if strict:
+        present_types = {str(row["event_type"]) for row in result["rows"]}
+        required_types = {"happy_moment_start", "heist_start"}
+        missing = sorted(required_types.difference(present_types))
+        if missing:
+            raise SmokeFailureError(
+                f"schedule-readiness strict mode missing event types: {', '.join(missing)}"
+            )
+        result["strict"] = True
+        result["required_event_types"] = sorted(required_types)
+    return result
 
 
 async def validate_stage_command_menu(stage_api: BotApiProtocol | None) -> dict[str, Any]:
@@ -758,7 +953,9 @@ async def execute(
     report.preflight = asdict(preflight)
     report.command_menu = await validate_stage_command_menu(stage_api)
     if config.scenario == "schedule-readiness":
-        report.schedule_readiness = read_schedule_readiness(config.stage_db_path)
+        report.schedule_readiness = read_schedule_readiness(
+            config.stage_db_path, strict=config.schedule_strict
+        )
         report.db_assertions = {"skipped": "schedule-readiness is read-only"}
         report.ok = True
         return report
