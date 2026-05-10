@@ -8,11 +8,13 @@
 
 ## 2026-05-10: TASK-021 Event E2E coverage and `/start` removal
 
-**Decision**: `/start` полностью удалён из router/locale контрактов, а для Happy Moment и Heist добавлены скрытые stage-only E2E hooks, включаемые только через `LEFT4CASINO_E2E_HOOKS_ENABLED` и опционально ограничиваемые `LEFT4CASINO_E2E_HOOKS_ALLOWED_USER_ID`.
+**Decision**: `/start` полностью удалён из router/locale контрактов, а для Happy Moment и Heist добавлены скрытые stage-only E2E hooks, включаемые только через `LEFT4CASINO_E2E_HOOKS_ENABLED` вместе с обязательным `LEFT4CASINO_E2E_HOOKS_ALLOWED_USER_ID`.
 
 **Reasoning**: Команда `/start` не должна создавать пользователей или оставлять любой UI след, а расписание событий недостаточно для обязательной live-проверки: E2E должен активировать состояние в текущем stage-процессе, чтобы реальные slot spins писали `happy_moment_win`, `heist_contribution`, `heist_win` и `heist_commission`.
 
 **Result**: Добавлен сценарий `telegram_e2e_smoke.py --scenario events`, требующий явных guards `TELEGRAM_E2E_ALLOW_EVENT_HOOKS=1` и `TELEGRAM_E2E_ALLOW_DB_MUTATION=1`. Production, `/opt` stage runtime, secrets, `settings.toml`, БД и untracked credential helper files не изменялись.
+
+**Review hardening**: Hooks fail-closed без валидного caller guard, не заменяют non-E2E активные события, для Heist не вызывают payout-capable `end_heist` при замене unknown state, а E2E runner ждёт cleanup ack и фильтрует `heist_win` по expected chat/winner.
 
 **References**: TASK-021, `docs/specs/archive/TASK-021_EVENT_E2E_NO_START.md`, `bot/handlers/default_commands.py`, `bot/handlers/e2e_hooks.py`, `scripts/telegram_e2e_smoke.py`, `tests/unit/test_telegram_e2e_smoke.py`.
 

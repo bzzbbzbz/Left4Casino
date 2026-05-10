@@ -71,6 +71,7 @@ class HeistState:
     seed_applied: bool = False
     start_time: datetime | None = None
     extended: bool = False  # было ли продление Фазы 1
+    e2e_owned: bool = False
 
 
 class HeistService:

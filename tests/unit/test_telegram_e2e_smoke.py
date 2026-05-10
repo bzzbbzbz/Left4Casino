@@ -207,6 +207,51 @@ class FakeStartIgnoredReplyBot(FakeOffsetAwareReplyBot):
         return {"message_id": self.update_id, "chat": {"id": chat_id}, "text": text}
 
 
+class FakeHookAckBot(FakeNoReplyBot):
+    def __init__(self, db_path: Path, *, ack_cleanup: bool = True) -> None:
+        super().__init__(db_path)
+        self.update_id = 0
+        self.sent_texts: list[str] = []
+        self.replies: list[dict[str, Any]] = []
+        self.ack_cleanup = ack_cleanup
+
+    async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+        self.sent_texts.append(text)
+        self.update_id += 1
+        if text.startswith("/e2e_happy_start") and self.db_path is not None:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT INTO event_history "
+                    "(event_id, user_id, event_type, amount, metadata, chat_id) "
+                    "VALUES (?,?,?,?,?,?)",
+                    ("happy-start", 0, "happy_moment_start", "0", "{}", chat_id),
+                )
+        if not text.startswith("/e2e_happy_end") or self.ack_cleanup:
+            self._queue_reply(chat_id, f"ack {text.split('@', maxsplit=1)[0]}")
+        return {"message_id": self.update_id, "chat": {"id": chat_id}, "text": text}
+
+    async def get_updates(
+        self, offset: int | None = None, timeout: int = 0, allowed_updates: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        updates = self.replies
+        self.replies = []
+        return updates
+
+    def _queue_reply(self, chat_id: int, text: str) -> None:
+        self.update_id += 1
+        self.replies.append(
+            {
+                "update_id": self.update_id,
+                "message": {
+                    "message_id": self.update_id,
+                    "chat": {"id": chat_id},
+                    "from": {"id": 777, "username": "Left4CasinoStageBot"},
+                    "text": text,
+                },
+            }
+        )
+
+
 def write_stage_settings(path: Path, allowed_chat_ids: list[int]) -> None:
     ids = ", ".join(str(chat_id) for chat_id in allowed_chat_ids)
     path.write_text(
@@ -263,6 +308,23 @@ def create_event_db(db_path: Path) -> None:
             "CREATE TABLE event_history ("
             "event_id TEXT, user_id INTEGER, event_type TEXT, amount TEXT, "
             "metadata TEXT, chat_id INTEGER)"
+        )
+
+
+def create_event_flow_db(db_path: Path, user_id: int = 42) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE users "
+            "(user_id INTEGER PRIMARY KEY, balance TEXT, safe_balance TEXT, bid TEXT, state TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE event_history ("
+            "event_id TEXT, user_id INTEGER, event_type TEXT, amount TEXT, "
+            "metadata TEXT, chat_id INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO users (user_id, balance, safe_balance, bid, state) VALUES (?,?,?,?,?)",
+            (user_id, "50", "0", "1", "IDLE"),
         )
 
 
@@ -513,6 +575,94 @@ def test_happy_and_heist_metadata_assertion_helpers(tmp_path: Path) -> None:
     assert (
         smoke.assert_heist_event_metadata(contribution, loss, win)["loss"]["during_heist"] is True
     )
+
+
+def test_heist_win_lookup_filters_expected_chat_and_winner(tmp_path: Path) -> None:
+    db_path = tmp_path / "casino.db"
+    create_event_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO event_history VALUES (?,?,?,?,?,?)",
+            ("wrong-chat", 42, "heist_win", "1", json.dumps({"total_pot": 1}), -2002),
+        )
+        conn.execute(
+            "INSERT INTO event_history VALUES (?,?,?,?,?,?)",
+            ("wrong-user", 77, "heist_win", "1", json.dumps({"total_pot": 1}), -1001),
+        )
+        conn.execute(
+            "INSERT INTO event_history VALUES (?,?,?,?,?,?)",
+            ("expected", 42, "heist_win", "1", json.dumps({"total_pot": 1}), -1001),
+        )
+
+    result = smoke.latest_event_after(db_path, "heist_win", 0, user_id=42, chat_id=-1001)
+
+    assert result is not None
+    assert result["event_id"] == "expected"
+
+
+@pytest.mark.asyncio
+async def test_event_flow_cleanup_waits_and_reports_ack_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_event_flow_db(db_path)
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_SCENARIO"] = "events"
+    env["TELEGRAM_E2E_ALLOW_EVENT_HOOKS"] = "1"
+    env["TELEGRAM_E2E_ALLOW_DB_MUTATION"] = "1"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    config = smoke.E2EConfig.from_env(env)
+    preflight = smoke.PreflightResult(
+        -1001, 42, "TesterBot", 777, "Left4CasinoStageBot", "Stage chat"
+    )
+
+    async def fail_happy(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise smoke.SmokeFailureError("forced happy failure")
+
+    monkeypatch.setattr(smoke, "run_spin_until_happy_win", fail_happy)
+    api = FakeHookAckBot(db_path, ack_cleanup=False)
+
+    with pytest.raises(smoke.SmokeFailureError, match="cleanup failures"):
+        await smoke.run_event_flows(config, api, preflight)
+
+    assert any(text.startswith("/e2e_happy_end") for text in api.sent_texts)
+
+
+@pytest.mark.asyncio
+async def test_event_flow_cleanup_ack_success_does_not_mask_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_event_flow_db(db_path)
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_SCENARIO"] = "events"
+    env["TELEGRAM_E2E_ALLOW_EVENT_HOOKS"] = "1"
+    env["TELEGRAM_E2E_ALLOW_DB_MUTATION"] = "1"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    config = smoke.E2EConfig.from_env(env)
+    preflight = smoke.PreflightResult(
+        -1001, 42, "TesterBot", 777, "Left4CasinoStageBot", "Stage chat"
+    )
+
+    async def fail_happy(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise smoke.SmokeFailureError("forced happy failure")
+
+    monkeypatch.setattr(smoke, "run_spin_until_happy_win", fail_happy)
+    api = FakeHookAckBot(db_path, ack_cleanup=True)
+
+    with pytest.raises(smoke.SmokeFailureError, match="forced happy failure") as exc:
+        await smoke.run_event_flows(config, api, preflight)
+
+    assert "cleanup failures" not in str(exc.value)
+    assert any(text.startswith("/e2e_happy_end") for text in api.sent_texts)
 
 
 def test_smoke_db_assertion_still_requires_state_delta(tmp_path: Path) -> None:

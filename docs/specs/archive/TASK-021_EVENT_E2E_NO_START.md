@@ -27,8 +27,9 @@
 ### REQ-021-2: Stage-only E2E hooks
 
 - Добавить скрытый router с командами `/e2e_happy_start`, `/e2e_happy_end`, `/e2e_heist_start`, `/e2e_heist_end`.
-- Router включается только при `LEFT4CASINO_E2E_HOOKS_ENABLED=1/true`.
-- Опциональный guard `LEFT4CASINO_E2E_HOOKS_ALLOWED_USER_ID` ограничивает вызывающего пользователя.
+- Router включается только при `LEFT4CASINO_E2E_HOOKS_ENABLED=1/true` и обязательном валидном `LEFT4CASINO_E2E_HOOKS_ALLOWED_USER_ID`.
+- Если caller guard отсутствует/невалиден, hooks fail-closed: router не регистрируется, а handler-level guard также отказывает.
+- Hook start не заменяет реальные активные Happy Moment/Heist: non-E2E active event получает отказ без мутации. Перезапуск/cleanup допускается только для E2E-owned state.
 - Hooks не добавляются в Bot API menu и не меняют production scheduler.
 
 ### REQ-021-3: Live event E2E scenario
@@ -36,6 +37,7 @@
 - Добавить сценарий `events`/`event-flows`, требующий `TELEGRAM_E2E_ALLOW_EVENT_HOOKS=1` и `TELEGRAM_E2E_ALLOW_DB_MUTATION=1`.
 - Сценарий должен preflight/drain updates, сбрасывать тестовый баланс, запускать Happy Moment hook, крутить слоты до `happy_moment_win`, завершать Happy Moment, запускать Heist hook, крутить до `heist_contribution` + `loss(during_heist=true)`, завершать Heist и проверять DB events/metadata.
 - Все DB paths проходят stage-prefix guard; tokens остаются redacted.
+- Failure cleanup отправляет end-hooks, ждёт stage-bot ack и сообщает cleanup failure в ошибке сценария.
 
 ### REQ-021-4: Tests and validation
 

@@ -1029,6 +1029,7 @@ async def run_event_flows(
     assertions: dict[str, Any] = {}
     happy_started = False
     heist_started = False
+    cleanup_errors: list[str] = []
     before_rowid = max_event_rowid(config.stage_db_path)
     try:
         reset_tester_state_for_stage(config, preflight.tester_bot_id, 50)
@@ -1134,7 +1135,13 @@ async def run_event_flows(
             user_id=preflight.tester_bot_id,
             chat_id=preflight.target_chat_id,
         )
-        heist_win = latest_event_after(config.stage_db_path, "heist_win", heist_before)
+        heist_win = latest_event_after(
+            config.stage_db_path,
+            "heist_win",
+            heist_before,
+            user_id=preflight.tester_bot_id,
+            chat_id=preflight.target_chat_id,
+        )
         heist_commission = latest_event_after(
             config.stage_db_path, "heist_commission", heist_before, chat_id=preflight.target_chat_id
         )
@@ -1157,11 +1164,35 @@ async def run_event_flows(
             "heist_commission": heist_commission,
         }
         return steps, assertions
-    except Exception:
+    except Exception as exc:
         if happy_started:
-            await _best_effort_hook(api, preflight.target_chat_id, f"/e2e_happy_end{suffix}")
+            cleanup_error, update_offset = await _cleanup_hook(
+                api=api,
+                reply_filter=reply_filter,
+                chat_id=preflight.target_chat_id,
+                text=f"/e2e_happy_end{suffix}",
+                name="cleanup-happy-end",
+                config=config,
+                update_offset=update_offset,
+            )
+            if cleanup_error:
+                cleanup_errors.append(cleanup_error)
         if heist_started:
-            await _best_effort_hook(api, preflight.target_chat_id, f"/e2e_heist_end{suffix}")
+            cleanup_error, update_offset = await _cleanup_hook(
+                api=api,
+                reply_filter=reply_filter,
+                chat_id=preflight.target_chat_id,
+                text=f"/e2e_heist_end{suffix}",
+                name="cleanup-heist-end",
+                config=config,
+                update_offset=update_offset,
+            )
+            if cleanup_error:
+                cleanup_errors.append(cleanup_error)
+        if cleanup_errors:
+            raise SmokeFailureError(
+                f"{exc}; cleanup failures: {'; '.join(cleanup_errors)}"
+            ) from exc
         raise
 
 
@@ -1199,11 +1230,30 @@ async def _send_hook_step(
     )
 
 
-async def _best_effort_hook(api: BotApiProtocol, chat_id: int, text: str) -> None:
+async def _cleanup_hook(
+    *,
+    api: BotApiProtocol,
+    reply_filter: StageReplyFilter,
+    chat_id: int,
+    text: str,
+    name: str,
+    config: E2EConfig,
+    update_offset: int | None,
+) -> tuple[str | None, int | None]:
     try:
         await api.send_message(chat_id, text)
-    except Exception:
-        return
+        await asyncio.sleep(config.rate_limit_seconds)
+        replies, new_offset = await poll_stage_replies(
+            api=api,
+            reply_filter=reply_filter,
+            update_offset=update_offset,
+            timeout_seconds=min(config.timeout_seconds, 5.0),
+        )
+    except Exception as exc:
+        return f"{name} send/poll failed: {exc}", update_offset
+    if not replies:
+        return f"{name} did not receive stage bot ack", new_offset
+    return None, new_offset
 
 
 async def run_spin_until_happy_win(
@@ -1332,7 +1382,7 @@ def latest_event_after(
             where.append("chat_id = ?")
             params.append(chat_id)
         row = conn.execute(
-            f"SELECT rowid, user_id, event_type, amount, metadata, chat_id FROM event_history WHERE {' AND '.join(where)} ORDER BY rowid DESC LIMIT 1",
+            f"SELECT rowid, event_id, user_id, event_type, amount, metadata, chat_id FROM event_history WHERE {' AND '.join(where)} ORDER BY rowid DESC LIMIT 1",
             params,
         ).fetchone()
     return dict(row) if row else None

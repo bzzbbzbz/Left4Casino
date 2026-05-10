@@ -60,6 +60,7 @@ class ActiveMoment:
     end_time: datetime
     tier: HappyMomentTier
     name: str
+    e2e_owned: bool = False
 
 
 class HappyMomentService:
