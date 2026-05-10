@@ -18,6 +18,7 @@ import time
 import tomllib
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -1027,8 +1028,7 @@ async def run_event_flows(
     update_offset = await drain_current_update_offset(api)
     steps: list[dict[str, Any]] = []
     assertions: dict[str, Any] = {}
-    happy_started = False
-    heist_started = False
+    cleanup_needed = {"happy": False, "heist": False}
     cleanup_errors: list[str] = []
     before_rowid = max_event_rowid(config.stage_db_path)
     try:
@@ -1042,9 +1042,9 @@ async def run_event_flows(
             config,
             steps,
             update_offset,
+            on_sent=lambda: cleanup_needed.__setitem__("happy", True),
         )
         update_offset = steps[-1].pop("update_offset", update_offset)
-        happy_started = True
         happy_start = latest_event_after(config.stage_db_path, "happy_moment_start", before_rowid)
         if happy_start is None:
             raise SmokeFailureError("happy_moment_start event was not recorded")
@@ -1080,7 +1080,7 @@ async def run_event_flows(
             update_offset,
         )
         update_offset = steps[-1].pop("update_offset", update_offset)
-        happy_started = False
+        cleanup_needed["happy"] = False
 
         reset_tester_state_for_stage(config, preflight.tester_bot_id, 50)
         heist_before = max_event_rowid(config.stage_db_path)
@@ -1093,9 +1093,9 @@ async def run_event_flows(
             config,
             steps,
             update_offset,
+            on_sent=lambda: cleanup_needed.__setitem__("heist", True),
         )
         update_offset = steps[-1].pop("update_offset", update_offset)
-        heist_started = True
         heist_start = latest_event_after(
             config.stage_db_path, "heist_start", heist_before, chat_id=preflight.target_chat_id
         )
@@ -1119,7 +1119,7 @@ async def run_event_flows(
             update_offset,
         )
         update_offset = steps[-1].pop("update_offset", update_offset)
-        heist_started = False
+        cleanup_needed["heist"] = False
 
         heist_contribution = latest_event_after(
             config.stage_db_path,
@@ -1165,7 +1165,7 @@ async def run_event_flows(
         }
         return steps, assertions
     except Exception as exc:
-        if happy_started:
+        if cleanup_needed["happy"]:
             cleanup_error, update_offset = await _cleanup_hook(
                 api=api,
                 reply_filter=reply_filter,
@@ -1177,7 +1177,7 @@ async def run_event_flows(
             )
             if cleanup_error:
                 cleanup_errors.append(cleanup_error)
-        if heist_started:
+        if cleanup_needed["heist"]:
             cleanup_error, update_offset = await _cleanup_hook(
                 api=api,
                 reply_filter=reply_filter,
@@ -1205,8 +1205,11 @@ async def _send_hook_step(
     config: E2EConfig,
     steps: list[dict[str, Any]],
     update_offset: int | None,
+    on_sent: Callable[[], None] | None = None,
 ) -> None:
     sent = await api.send_message(preflight.target_chat_id, text)
+    if on_sent is not None:
+        on_sent()
     await asyncio.sleep(config.rate_limit_seconds)
     replies, new_offset = await poll_stage_replies(
         api=api,
@@ -1253,7 +1256,19 @@ async def _cleanup_hook(
         return f"{name} send/poll failed: {exc}", update_offset
     if not replies:
         return f"{name} did not receive stage bot ack", new_offset
+    reply_texts = [_message_text(reply) for reply in replies]
+    expected_marker = _cleanup_success_marker(name)
+    if expected_marker and not any(text.startswith(expected_marker) for text in reply_texts):
+        return f"{name} received non-success ack: {reply_texts}", new_offset
     return None, new_offset
+
+
+def _cleanup_success_marker(name: str) -> str | None:
+    if "happy" in name:
+        return "E2E_HOOK_OK happy_end"
+    if "heist" in name:
+        return "E2E_HOOK_OK heist_end"
+    return None
 
 
 async def run_spin_until_happy_win(

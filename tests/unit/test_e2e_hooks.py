@@ -137,7 +137,7 @@ async def test_happy_start_refuses_non_e2e_active_event(monkeypatch: pytest.Monk
 
     await e2e_hooks.cmd_e2e_happy_start(message, service, db)  # type: ignore[arg-type]
 
-    assert message.answers == ["E2E Happy Moment refused: non-E2E Happy Moment is active"]
+    assert message.answers == ["E2E_HOOK_REFUSED happy_start non-E2E Happy Moment is active"]
     assert service.started == 0
     assert service.ended == 0
     assert db.upserts == []
@@ -155,7 +155,7 @@ async def test_happy_start_can_restart_e2e_owned_event(monkeypatch: pytest.Monke
     assert service.ended == 1
     assert service.started == 1
     assert service.active_moment.e2e_owned is True
-    assert message.answers[-1].startswith("E2E Happy Moment started")
+    assert message.answers[-1].startswith("E2E_HOOK_OK happy_start")
 
 
 @pytest.mark.asyncio
@@ -169,7 +169,7 @@ async def test_heist_start_refuses_non_e2e_active_without_payout(
 
     await e2e_hooks.cmd_e2e_heist_start(message, service, db)  # type: ignore[arg-type]
 
-    assert message.answers == ["E2E Heist refused: non-E2E Heist is active in this chat"]
+    assert message.answers == ["E2E_HOOK_REFUSED heist_start non-E2E Heist is active in this chat"]
     assert service.ended == []
     assert db.events == []
 

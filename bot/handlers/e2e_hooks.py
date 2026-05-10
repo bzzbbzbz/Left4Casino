@@ -93,7 +93,7 @@ async def cmd_e2e_happy_start(
         return
     if happy_moment_service.active_moment is not None:
         if not _is_e2e_happy_active(happy_moment_service):
-            await message.answer("E2E Happy Moment refused: non-E2E Happy Moment is active")
+            await message.answer("E2E_HOOK_REFUSED happy_start non-E2E Happy Moment is active")
             return
         await happy_moment_service.end_moment()
 
@@ -122,7 +122,7 @@ async def cmd_e2e_happy_start(
     await happy_moment_service.start_moment(moment)
     if happy_moment_service.active_moment is not None:
         happy_moment_service.active_moment.e2e_owned = True
-    await message.answer("E2E Happy Moment started: multiplier x2.0 for 5 minutes")
+    await message.answer("E2E_HOOK_OK happy_start multiplier x2.0 for 5 minutes")
 
 
 @router.message(Command("e2e_happy_end"), flags=flags)
@@ -132,10 +132,10 @@ async def cmd_e2e_happy_end(message: Message, happy_moment_service: HappyMomentS
     if happy_moment_service.active_moment is not None and not _is_e2e_happy_active(
         happy_moment_service
     ):
-        await message.answer("E2E Happy Moment end refused: non-E2E Happy Moment is active")
+        await message.answer("E2E_HOOK_REFUSED happy_end non-E2E Happy Moment is active")
         return
     await happy_moment_service.end_moment()
-    await message.answer("E2E Happy Moment ended")
+    await message.answer("E2E_HOOK_OK happy_end ended_or_not_active")
 
 
 @router.message(Command("e2e_heist_start"), flags=flags)
@@ -150,7 +150,9 @@ async def cmd_e2e_heist_start(
     if heist_service.is_active(chat_id):
         active_state = heist_service.get_heist_state(chat_id)
         if not _is_e2e_heist_state(active_state):
-            await message.answer("E2E Heist refused: non-E2E Heist is active in this chat")
+            await message.answer(
+                "E2E_HOOK_REFUSED heist_start non-E2E Heist is active in this chat"
+            )
             return
         # Restart only our own synthetic state. Do not call real end_heist here:
         # it can pay out, so replacing an active event must never mutate economy.
@@ -200,7 +202,7 @@ async def cmd_e2e_heist_start(
         "• Выигрыши забираете себе (как обычно)\n"
         "• Когда ограбление закончится — последний игрок забирает весь банк!",
     )
-    await message.answer("E2E Heist started for this chat")
+    await message.answer("E2E_HOOK_OK heist_start started_for_this_chat")
 
 
 @router.message(Command("e2e_heist_end"), flags=flags)
@@ -209,7 +211,7 @@ async def cmd_e2e_heist_end(message: Message, heist_service: HeistService) -> No
         return
     state = heist_service.get_heist_state(message.chat.id)
     if state is not None and not _is_e2e_heist_state(state):
-        await message.answer("E2E Heist end refused: non-E2E Heist is active in this chat")
+        await message.answer("E2E_HOOK_REFUSED heist_end non-E2E Heist is active in this chat")
         return
     await heist_service.end_heist(message.chat.id)
-    await message.answer("E2E Heist ended for this chat")
+    await message.answer("E2E_HOOK_OK heist_end ended_or_not_active")

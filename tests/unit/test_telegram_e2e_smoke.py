@@ -208,12 +208,21 @@ class FakeStartIgnoredReplyBot(FakeOffsetAwareReplyBot):
 
 
 class FakeHookAckBot(FakeNoReplyBot):
-    def __init__(self, db_path: Path, *, ack_cleanup: bool = True) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        ack_cleanup: bool = True,
+        happy_start_ack: bool = True,
+        cleanup_reply_text: str = "E2E_HOOK_OK happy_end ended_or_not_active",
+    ) -> None:
         super().__init__(db_path)
         self.update_id = 0
         self.sent_texts: list[str] = []
         self.replies: list[dict[str, Any]] = []
         self.ack_cleanup = ack_cleanup
+        self.happy_start_ack = happy_start_ack
+        self.cleanup_reply_text = cleanup_reply_text
 
     async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
         self.sent_texts.append(text)
@@ -226,7 +235,13 @@ class FakeHookAckBot(FakeNoReplyBot):
                     "VALUES (?,?,?,?,?,?)",
                     ("happy-start", 0, "happy_moment_start", "0", "{}", chat_id),
                 )
-        if not text.startswith("/e2e_happy_end") or self.ack_cleanup:
+        if text.startswith("/e2e_happy_start"):
+            if self.happy_start_ack:
+                self._queue_reply(chat_id, "E2E_HOOK_OK happy_start multiplier x2.0")
+        elif text.startswith("/e2e_happy_end"):
+            if self.ack_cleanup:
+                self._queue_reply(chat_id, self.cleanup_reply_text)
+        else:
             self._queue_reply(chat_id, f"ack {text.split('@', maxsplit=1)[0]}")
         return {"message_id": self.update_id, "chat": {"id": chat_id}, "text": text}
 
@@ -630,6 +645,66 @@ async def test_event_flow_cleanup_waits_and_reports_ack_failure(
         await smoke.run_event_flows(config, api, preflight)
 
     assert any(text.startswith("/e2e_happy_end") for text in api.sent_texts)
+
+
+@pytest.mark.asyncio
+async def test_event_flow_start_ack_timeout_still_attempts_cleanup(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_event_flow_db(db_path)
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_SCENARIO"] = "events"
+    env["TELEGRAM_E2E_ALLOW_EVENT_HOOKS"] = "1"
+    env["TELEGRAM_E2E_ALLOW_DB_MUTATION"] = "1"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    config = smoke.E2EConfig.from_env(env)
+    preflight = smoke.PreflightResult(
+        -1001, 42, "TesterBot", 777, "Left4CasinoStageBot", "Stage chat"
+    )
+    api = FakeHookAckBot(db_path, happy_start_ack=False, ack_cleanup=True)
+
+    with pytest.raises(smoke.SmokeFailureError, match="e2e-happy-start"):
+        await smoke.run_event_flows(config, api, preflight)
+
+    assert any(text.startswith("/e2e_happy_start") for text in api.sent_texts)
+    assert any(text.startswith("/e2e_happy_end") for text in api.sent_texts)
+
+
+@pytest.mark.asyncio
+async def test_event_flow_cleanup_refusal_is_not_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_event_flow_db(db_path)
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_SCENARIO"] = "events"
+    env["TELEGRAM_E2E_ALLOW_EVENT_HOOKS"] = "1"
+    env["TELEGRAM_E2E_ALLOW_DB_MUTATION"] = "1"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    config = smoke.E2EConfig.from_env(env)
+    preflight = smoke.PreflightResult(
+        -1001, 42, "TesterBot", 777, "Left4CasinoStageBot", "Stage chat"
+    )
+
+    async def fail_happy(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise smoke.SmokeFailureError("forced happy failure")
+
+    monkeypatch.setattr(smoke, "run_spin_until_happy_win", fail_happy)
+    api = FakeHookAckBot(
+        db_path,
+        ack_cleanup=True,
+        cleanup_reply_text="E2E_HOOK_REFUSED happy_end non-E2E Happy Moment is active",
+    )
+
+    with pytest.raises(smoke.SmokeFailureError, match="non-success ack"):
+        await smoke.run_event_flows(config, api, preflight)
 
 
 @pytest.mark.asyncio
