@@ -713,18 +713,19 @@ def reset_tester_state_for_stage(config: E2EConfig, tester_user_id: int, balance
             insert_values,
         )
         if table_exists(conn, "ai_credit_sessions"):
+            credit_columns = get_table_columns(conn, "ai_credit_sessions")
+            credit_status_column = "status" if "status" in credit_columns else None
+            if credit_status_column is None and "state" in credit_columns:
+                credit_status_column = "state"
             conn.execute(
-                """
+                f"""
                 UPDATE ai_credit_sessions
-                SET status = 'terminated', finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
-                WHERE user_id = ? AND status IN ('active', 'processing')
+                SET {credit_status_column} = 'terminated'
+                {", finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)" if "finished_at" in credit_columns else ""}
+                WHERE user_id = ? AND {credit_status_column} IN ('active', 'processing')
                 """
-                if "finished_at" in get_table_columns(conn, "ai_credit_sessions")
-                else """
-                UPDATE ai_credit_sessions
-                SET status = 'terminated'
-                WHERE user_id = ? AND status IN ('active', 'processing')
-                """,
+                if credit_status_column and "user_id" in credit_columns
+                else "SELECT 1 WHERE ? IS NULL",
                 (tester_user_id,),
             )
 
@@ -760,16 +761,32 @@ def snapshot_credit_sessions(db_path: Path, tester_user_id: int) -> dict[str, An
     with sqlite3.connect(db_path) as conn:
         if not table_exists(conn, "ai_credit_sessions"):
             return {"count": 0, "latest_session_id": None, "latest_status": None}
+        columns = get_table_columns(conn, "ai_credit_sessions")
+        if "user_id" not in columns:
+            raise SmokeFailureError("ai_credit_sessions schema missing required user_id column")
+        session_id_expr = "CAST(rowid AS TEXT)"
+        for candidate in ("session_id", "id"):
+            if candidate in columns:
+                session_id_expr = f"CAST({candidate} AS TEXT)"
+                break
+        status_column = "status" if "status" in columns else "state" if "state" in columns else None
+        status_expr = status_column or "NULL"
+        order_parts = [
+            f"{column} DESC"
+            for column in ("created_at", "updated_at", "finished_at")
+            if column in columns
+        ]
+        order_parts.append("rowid DESC")
         count = conn.execute(
             "SELECT COUNT(*) FROM ai_credit_sessions WHERE user_id = ?",
             (tester_user_id,),
         ).fetchone()[0]
         row = conn.execute(
-            """
-            SELECT session_id, status
+            f"""
+            SELECT {session_id_expr}, {status_expr}
             FROM ai_credit_sessions
             WHERE user_id = ?
-            ORDER BY created_at DESC, rowid DESC
+            ORDER BY {", ".join(order_parts)}
             LIMIT 1
             """,
             (tester_user_id,),
@@ -778,6 +795,15 @@ def snapshot_credit_sessions(db_path: Path, tester_user_id: int) -> dict[str, An
         "count": int(count),
         "latest_session_id": row[0] if row else None,
         "latest_status": row[1] if row else None,
+        "schema": {
+            "session_id_column": "session_id"
+            if "session_id" in columns
+            else "id"
+            if "id" in columns
+            else "rowid",
+            "status_column": status_column,
+            "order_columns": [part.removesuffix(" DESC") for part in order_parts],
+        },
     }
 
 
@@ -787,6 +813,8 @@ def assert_credit_session_started(
     before = before or {"count": 0, "latest_session_id": None, "latest_status": None}
     after = snapshot_credit_sessions(db_path, tester_user_id)
     accepted_statuses = {"active", "processing"}
+    if after.get("schema", {}).get("status_column") is None:
+        raise SmokeFailureError("ai_credit_sessions schema missing required status column")
     created_new_session = (
         after["count"] > before["count"]
         and after["latest_session_id"] != before["latest_session_id"]
@@ -1109,6 +1137,19 @@ async def async_main(argv: list[str]) -> int:
         except ConfigError:
             pass
         report = SmokeReport(ok=False, config=safe_config, errors=[str(exc)])
+        print(report.to_json())
+        return 2
+    except sqlite3.Error as exc:
+        safe_config = {"error": "configuration not loaded"}
+        try:
+            safe_config = E2EConfig.from_env(env).redacted()
+        except ConfigError:
+            pass
+        report = SmokeReport(
+            ok=False,
+            config=safe_config,
+            errors=[f"stage DB schema/query error: {exc}"],
+        )
         print(report.to_json())
         return 2
     print(report.to_json())

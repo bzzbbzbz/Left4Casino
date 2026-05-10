@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -386,6 +387,62 @@ def test_credit_assertion_requires_fresh_session(tmp_path: Path) -> None:
 
     result = smoke.assert_credit_session_started(db_path, 42, before=before)
     assert result["after"]["latest_session_id"] == "fresh"
+
+
+def test_credit_assertion_supports_sessions_without_created_at(tmp_path: Path) -> None:
+    db_path = tmp_path / "casino.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE ai_credit_sessions (session_id TEXT, user_id INTEGER, status TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO ai_credit_sessions (session_id, user_id, status) VALUES (?,?,?)",
+            ("stale", 42, "active"),
+        )
+    before = smoke.snapshot_credit_sessions(db_path, 42)
+
+    with pytest.raises(smoke.SmokeFailureError, match="fresh active"):
+        smoke.assert_credit_session_started(db_path, 42, before=before)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO ai_credit_sessions (session_id, user_id, status) VALUES (?,?,?)",
+            ("fresh", 42, "active"),
+        )
+
+    result = smoke.assert_credit_session_started(db_path, 42, before=before)
+    assert result["after"]["latest_session_id"] == "fresh"
+    assert result["after"]["latest_status"] == "active"
+    assert result["after"]["schema"]["order_columns"] == ["rowid"]
+
+
+@pytest.mark.asyncio
+async def test_async_main_reports_sqlite_schema_errors_as_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    async def raise_schema_error(
+        config: smoke.E2EConfig,
+        api: smoke.BotApiProtocol,
+        stage_api: smoke.BotApiProtocol | None = None,
+    ) -> smoke.SmokeReport:
+        raise sqlite3.OperationalError("no such column: created_at")
+
+    monkeypatch.setattr(smoke, "execute", raise_schema_error)
+
+    exit_code = await smoke.async_main([])
+
+    assert exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["errors"] == ["stage DB schema/query error: no such column: created_at"]
 
 
 def test_report_does_not_include_token(tmp_path: Path) -> None:
