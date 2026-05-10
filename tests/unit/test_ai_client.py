@@ -79,3 +79,63 @@ async def test_real_ai_error_uses_safe_greeting_fallback(monkeypatch) -> None:
 
     assert greeting == "Эй, ты! Хочешь денег? Удиви меня!"
     create.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "",
+        "   ",
+        "dummy",
+        "replace-me",
+        "changeme",
+        "your-api-key",
+        "your_api_key",
+        "your-openrouter-api-key",
+        "<OPENROUTER_API_KEY>",
+        "placeholder",
+    ],
+)
+def test_real_provider_rejects_placeholder_api_keys(monkeypatch, placeholder: str) -> None:
+    """Real providers fail fast for template placeholders, without affecting mock."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="requires a real API key"):
+        AIClient(AIConfig(provider="openrouter", api_key=placeholder, model="test/model"))
+
+
+def test_mock_provider_allows_placeholder_api_key(monkeypatch) -> None:
+    """Explicit mock remains usable without real credentials."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with patch("bot.services.ai.AsyncOpenAI") as openai_cls:
+        client = AIClient(AIConfig(provider="mock", api_key="replace-me", model="unused"))
+
+    assert client.provider == "mock"
+    openai_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_greeting_error_log_omits_raw_exception_message(monkeypatch, caplog) -> None:
+    """LLM exception logs must not include secret-bearing raw exception text."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    create = AsyncMock(side_effect=RuntimeError("secret sk-test-secret leaked context"))
+    openai_cls = MagicMock(
+        return_value=SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+    )
+
+    with patch("bot.services.ai.AsyncOpenAI", openai_cls):
+        client = AIClient(
+            AIConfig(provider="openai", api_key="test-openai-key", model="gpt-4o-mini")
+        )
+        greeting = await client.generate_initial_greeting()
+
+    assert greeting == "Эй, ты! Хочешь денег? Удиви меня!"
+    assert "RuntimeError" in caplog.records[-1].__dict__.get("error_type", "")
+    assert "sk-test-secret" not in caplog.text
+    assert "leaked context" not in caplog.text

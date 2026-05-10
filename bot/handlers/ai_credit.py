@@ -65,7 +65,8 @@ async def cmd_credit(message: Message, db: Database, ai_client: AIClient, ai_con
         await db.add_dialogue_message(session_id, "assistant", greeting)
         await message.reply(greeting)
     except Exception as e:
-        await logger.aerror("AI Error during greeting", error=str(e))
+        await logger.aerror("AI Error during greeting", error_type=type(e).__name__)
+        await db.close_credit_session(session_id, "failed", 0, 0)
         await db.update_user_state(user_id, "IDLE")
         await message.reply("Банкир сейчас на обеде. Попробуй зайти позже.")
 
@@ -102,7 +103,7 @@ async def process_dialogue(message: Message, db: Database, ai_client: AIClient):
     try:
         response_data = await ai_client.generate_response(history)
     except Exception as e:
-        await logger.aerror("AI Error during response", error=str(e))
+        await logger.aerror("AI Error during response", error_type=type(e).__name__)
         await message.answer("Банкир отошел и забыл про тебя. Попробуй начать сначала (/credit).")
         await db.update_user_state(user_id, "IDLE")
         # Optional: close session as 'failed'

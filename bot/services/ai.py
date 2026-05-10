@@ -10,6 +10,40 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+_PLACEHOLDER_API_KEYS = {
+    "",
+    "dummy",
+    "replace-me",
+    "replaceme",
+    "change-me",
+    "changeme",
+    "your-api-key",
+    "yourapikey",
+    "your-api-key-here",
+    "your-openai-api-key",
+    "your-openrouter-api-key",
+    "api-key",
+    "apikey",
+    "placeholder",
+    "none",
+    "null",
+}
+
+
+def _normalize_api_key_for_validation(api_key: str | None) -> str:
+    return (api_key or "").strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _is_placeholder_api_key(api_key: str | None) -> bool:
+    normalized = _normalize_api_key_for_validation(api_key)
+    if normalized in _PLACEHOLDER_API_KEYS:
+        return True
+    return normalized.startswith("<") and normalized.endswith(">")
+
+
+def _exception_type(error: Exception) -> str:
+    return type(error).__name__
+
 
 class AIClient:
     def __init__(self, config):
@@ -37,7 +71,7 @@ class AIClient:
         else:
             raise ValueError(f"Unsupported AI provider: {config.provider}")
 
-        if not api_key or api_key == "dummy":
+        if _is_placeholder_api_key(api_key):
             raise ValueError(f"AI provider '{self.provider}' requires a real API key")
 
         if base_url:
@@ -121,7 +155,7 @@ class AIClient:
             return content
 
         except Exception as e:
-            logger.error(f"Error generating greeting: {e}")
+            logger.error("Error generating greeting", extra={"error_type": _exception_type(e)})
             return "Эй, ты! Хочешь денег? Удиви меня!"
 
     def _calculate_ai_score(self, text: str) -> int:
@@ -258,7 +292,7 @@ class AIClient:
                 text = data.get("text", "Ладно, вот твои копейки.")
                 reward = int(data.get("reward", 15))
             except Exception:
-                logger.warning(f"Failed to parse JSON from AI: {content}")
+                logger.warning("Failed to parse JSON from AI response")
                 text = "Ты меня утомил. Бери мелочь и уходи."
                 reward = 15
 
@@ -274,7 +308,7 @@ class AIClient:
             }
 
         except Exception as e:
-            logger.error(f"Error generating response: {e}")
+            logger.error("Error generating response", extra={"error_type": _exception_type(e)})
             return {
                 "content": "Банк закрыт на переучет. Проваливай.",
                 "completion_data": {"done": True, "score": 0, "reward": 1, "comment": "Ошибка API"},
