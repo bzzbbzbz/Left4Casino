@@ -75,6 +75,22 @@ def test_safety_rejects_db_path_outside_allowed_stage_prefix(tmp_path: Path) -> 
         )
 
 
+def test_safety_allows_stage_db_filename_under_allowed_prefix(tmp_path: Path) -> None:
+    db_path = tmp_path / "data" / "casino.stage.db"
+
+    assert smoke.validate_stage_db_path(db_path, tmp_path) == db_path.resolve(strict=False)
+
+
+def test_safety_rejects_prod_component_and_non_db_suffix(tmp_path: Path) -> None:
+    with pytest.raises(smoke.ConfigError, match="prod component"):
+        smoke.validate_stage_db_path(
+            tmp_path / "python-runner-prod" / "data" / "casino.stage.db", tmp_path
+        )
+
+    with pytest.raises(smoke.ConfigError, match=r"\.db"):
+        smoke.validate_stage_db_path(tmp_path / "data" / "casino.stage.sqlite", tmp_path)
+
+
 def test_target_chat_required_when_multiple_allowed_ids(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.stage.toml"
     db_path = tmp_path / "casino.db"

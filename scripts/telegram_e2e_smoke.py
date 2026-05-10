@@ -276,7 +276,7 @@ def validate_stage_db_path(db_path: Path, allowed_prefix: Path) -> Path:
     resolved_prefix = allowed_prefix.resolve(strict=False)
     if resolved_db in DEFAULT_PROD_DB_PATHS:
         raise ConfigError(f"refusing default/prod database path: {resolved_db}")
-    if any(part.lower() == "prod" for part in resolved_db.parts):
+    if any(_is_prod_path_component(part) for part in resolved_db.parts):
         raise ConfigError(f"refusing database path with prod component: {resolved_db}")
     try:
         resolved_db.relative_to(resolved_prefix)
@@ -284,9 +284,14 @@ def validate_stage_db_path(db_path: Path, allowed_prefix: Path) -> Path:
         raise ConfigError(
             f"database path {resolved_db} is outside allowed prefix {resolved_prefix}"
         ) from exc
-    if resolved_db.name != "casino.db":
-        raise ConfigError("stage database path must point to casino.db")
+    if resolved_db.suffix != ".db":
+        raise ConfigError("stage database path must point to a .db file")
     return resolved_db
+
+
+def _is_prod_path_component(part: str) -> bool:
+    normalized = part.lower()
+    return normalized in {"prod", "production"} or normalized.endswith("-prod")
 
 
 async def run_preflight(config: E2EConfig, api: BotApiProtocol) -> PreflightResult:
