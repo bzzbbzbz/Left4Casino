@@ -1,24 +1,26 @@
 start-text =
-    <b>Welcome to our virtual casino!</b>
-    From the start, you have { $points } points. Every spin costs 1 point. Possible winning combinations are:
+    <b>Left4Casino is active.</b>
+    Your balance: { $points } points.
 
-    3-of-a-kind (except "7") — 7 points
-    7️⃣7️⃣▫️ — 5 points (square = anything)
-    7️⃣7️⃣7️⃣ — 10 points
-
-    <b>Disclaimer</b>: this bot was made solely for entertainment purposes, your data may be lost any time!
-    There are no paid options in this bot.
-
-    Remove keyboard — /stop
-    Show keyboard if missing — /spin
+    The bot works in group chats: bets, safe balance, transfers, dice duels and slots via Telegram 🎰 dice.
+    Command list: /help
 
 help-text =
-    Telegram slot machine has 4 icons: BAR, grapes, lemon and number 7. In total, there are 64 combinations.
-    Decoding of dice value is described <a href='https://github.com/MasterGroosha/telegram-casino-bot/blob/aiogram3/bot/dice_check.py'>here</a>.
+    <b>Left4Casino commands</b>
 
-    Source code of the bot is available on <a href='https://github.com/MasterGroosha/telegram-casino-bot'>GitHub</a>
+    /balance — show balance
+    /bid [N] — set bet multiplier; values above balance become all-in
+    /safe [±N] — show safe balance, deposit N points or withdraw N points
+    /stats [@user] — player stats in the group
+    /top — group leaderboard
+    /give N @user — transfer points to a player
+    /credit — request AI banker credit when balance is zero
+    /dice N — start a PvP dice duel
+    /take N @user — collect a debt from a debtor
 
-stop-text = Keyboard removed. To start from scratch, press /start, to get keyboard and continue: /spin
+    Slots: send Telegram dice with the 🎰 emoji in a group chat.
+
+stop-text = Old keyboard removed. Current command list: /help
 
 bar = BAR
 grapes = grapes
@@ -39,12 +41,18 @@ after-spin =
     { $result_text } New score: <b>{ $new_score }</b>.
 
 zero-balance =
-    Your balance is zero. Accept your fate and get back to your business, or press /start to start over. To remove keyboard, press /stop.
+    Your balance is zero. You can request AI banker credit with /credit. If an old keyboard remains, remove it with /stop.
 
 # If you don't want to send sticker when balance is zero, disable feature in bot configuration
 zero-balance-sticker = CAACAgIAAxkBAAEWXv5lAUAm76JOjvehtp18Gxb3if0eVQAC-hEAAknF8EuBzj23_M8x3jAE
 
-menu-start = Restart Casino
-menu-spin = Show keyboard and make a spin
-menu-stop = Remove keyboard
-menu-help = Information about this bot
+menu-balance = Balance
+menu-bid = Set bet
+menu-safe = Safe balance
+menu-stats = Player stats
+menu-top = Leaderboard
+menu-dice = Dice duel
+menu-take = Collect debt
+menu-give = Transfer points
+menu-credit = Banker credit
+menu-help = Command help

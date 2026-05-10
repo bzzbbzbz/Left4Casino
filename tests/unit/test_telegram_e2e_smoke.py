@@ -45,7 +45,7 @@ class FakeNoReplyBot:
     async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
         return {"message_id": 10, "chat": {"id": chat_id}, "text": text}
 
-    async def get_my_commands(self) -> list[dict[str, Any]]:
+    async def get_my_commands(self, scope: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         return []
 
     async def send_dice(self, chat_id: int, emoji: str) -> dict[str, Any]:
@@ -387,6 +387,8 @@ def test_stage_token_is_optional_and_redacted(tmp_path: Path) -> None:
 def test_legacy_start_detection_rejects_text_and_reply_markup() -> None:
     with pytest.raises(smoke.SmokeFailureError, match="legacy casino welcome"):
         smoke.assert_no_legacy_start_reply([{"text": "Добро пожаловать в казино!"}])
+    with pytest.raises(smoke.SmokeFailureError, match="legacy casino welcome"):
+        smoke.assert_no_legacy_start_reply([{"text": "Показать клавиатуру — /spin"}])
 
     with pytest.raises(smoke.SmokeFailureError, match="reply keyboard"):
         smoke.assert_no_legacy_start_reply([{"text": "ok", "reply_markup": {"keyboard": []}}])
@@ -397,22 +399,60 @@ def test_legacy_start_detection_rejects_text_and_reply_markup() -> None:
 @pytest.mark.asyncio
 async def test_command_menu_validation_uses_optional_stage_token_api() -> None:
     class FakeStageApi(FakeNoReplyBot):
-        async def get_my_commands(self) -> list[dict[str, Any]]:
+        def __init__(self) -> None:
+            super().__init__()
+            self.scope: dict[str, Any] | None = None
+
+        async def get_my_commands(
+            self, scope: dict[str, Any] | None = None
+        ) -> list[dict[str, Any]]:
+            self.scope = scope
             return [
                 {"command": "balance"},
                 {"command": "bid"},
                 {"command": "safe"},
-                {"command": "top"},
                 {"command": "stats"},
+                {"command": "top"},
+                {"command": "dice"},
+                {"command": "take"},
+                {"command": "give"},
                 {"command": "credit"},
+                {"command": "help"},
             ]
 
-    result = await smoke.validate_stage_command_menu(FakeStageApi())
+    api = FakeStageApi()
+    result = await smoke.validate_stage_command_menu(api)
 
     assert result["missing"] == []
+    assert result["scope"] == {"type": "all_group_chats"}
+    assert api.scope == {"type": "all_group_chats"}
     assert await smoke.validate_stage_command_menu(None) == {
         "skipped": "TELEGRAM_E2E_STAGE_BOT_TOKEN not set"
     }
+
+
+@pytest.mark.asyncio
+async def test_command_menu_validation_rejects_stale_advertised_commands() -> None:
+    class FakeStageApi(FakeNoReplyBot):
+        async def get_my_commands(
+            self, scope: dict[str, Any] | None = None
+        ) -> list[dict[str, Any]]:
+            return [
+                {"command": "balance"},
+                {"command": "bid"},
+                {"command": "safe"},
+                {"command": "stats"},
+                {"command": "top"},
+                {"command": "dice"},
+                {"command": "take"},
+                {"command": "give"},
+                {"command": "credit"},
+                {"command": "help"},
+                {"command": "spin"},
+            ]
+
+    with pytest.raises(smoke.SmokeFailureError, match="stale commands: spin"):
+        await smoke.validate_stage_command_menu(FakeStageApi())
 
 
 def test_db_mutation_guard_requires_explicit_env(tmp_path: Path) -> None:

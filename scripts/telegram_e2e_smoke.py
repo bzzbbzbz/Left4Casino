@@ -180,7 +180,9 @@ class BotApiProtocol(Protocol):
 
     async def send_dice(self, chat_id: int, emoji: str) -> dict[str, Any]: ...
 
-    async def get_my_commands(self) -> list[dict[str, Any]]: ...
+    async def get_my_commands(
+        self, scope: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]: ...
 
     async def get_updates(
         self, offset: int | None = None, timeout: int = 0, allowed_updates: list[str] | None = None
@@ -218,8 +220,11 @@ class TelegramBotApi:
     async def send_dice(self, chat_id: int, emoji: str) -> dict[str, Any]:
         return await self._call("sendDice", {"chat_id": chat_id, "emoji": emoji})
 
-    async def get_my_commands(self) -> list[dict[str, Any]]:
-        result = await self._call("getMyCommands")
+    async def get_my_commands(self, scope: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {}
+        if scope is not None:
+            payload["scope"] = json.dumps(scope)
+        result = await self._call("getMyCommands", payload)
         if not isinstance(result, list):
             raise SmokeFailureError("Bot API getMyCommands returned non-list result")
         return result
@@ -646,10 +651,14 @@ def dice_step_db_changed(db_path: Path, tester_user_id: int, before: dict[str, A
 def assert_no_legacy_start_reply(replies: list[dict[str, Any]]) -> None:
     legacy_fragments = (
         "добро пожаловать в казино",
-        "добро пожаловать в left4casino",
         "casino bot",
         "крутите слоты",
         "игровое меню",
+        "mastergroosha",
+        "github",
+        "gitlab",
+        "демонстрац",
+        "/spin",
     )
     for reply in replies:
         text = _message_text(reply).lower()
@@ -936,13 +945,18 @@ def read_schedule_readiness(db_path: Path, *, strict: bool = False) -> dict[str,
 async def validate_stage_command_menu(stage_api: BotApiProtocol | None) -> dict[str, Any]:
     if stage_api is None:
         return {"skipped": f"{ENV_STAGE_BOT_TOKEN} not set"}
-    commands = await stage_api.get_my_commands()
+    group_scope = {"type": "all_group_chats"}
+    commands = await stage_api.get_my_commands(scope=group_scope)
     names = [str(command.get("command", "")) for command in commands]
-    required = {"balance", "bid", "safe", "top", "stats", "credit"}
+    required = {"balance", "bid", "safe", "stats", "top", "dice", "take", "give", "credit", "help"}
+    forbidden = {"start", "spin", "stop"}
     missing = sorted(required.difference(names))
     if missing:
         raise SmokeFailureError(f"stage command menu missing commands: {', '.join(missing)}")
-    return {"commands": names, "missing": []}
+    stale = sorted(forbidden.intersection(names))
+    if stale:
+        raise SmokeFailureError(f"stage command menu advertises stale commands: {', '.join(stale)}")
+    return {"commands": names, "missing": [], "scope": group_scope}
 
 
 async def execute(

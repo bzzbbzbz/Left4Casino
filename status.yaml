@@ -104,3 +104,9 @@ tasks:
     spec: docs/specs/TASK-019_TELEGRAM_E2E_BOT_TESTER.md
     assignee: cursor-agent
     priority: MEDIUM
+  - id: TASK-020
+    name: "Command contract cleanup"
+    status: DONE
+    spec: docs/specs/archive/TASK-020_COMMAND_CONTRACT_CLEANUP.md
+    assignee: cursor-agent
+    priority: HIGH

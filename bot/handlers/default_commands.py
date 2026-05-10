@@ -6,7 +6,6 @@ from fluent.runtime import FluentLocalization
 
 from bot.config_reader import GameConfig
 from bot.db import Database
-from bot.keyboards import get_spin_keyboard
 from bot.utils.formatters import format_number
 
 flags = {"throttling_key": "default"}
@@ -34,7 +33,7 @@ async def cmd_start(
 
     start_text = l10n.format_value("start-text", {"points": balance})
 
-    await message.answer(start_text, reply_markup=get_spin_keyboard(l10n))
+    await message.answer(start_text)
 
 
 @router.message(Command("stop"), flags=flags)

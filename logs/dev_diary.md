@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-05-10: TASK-020 Command contract cleanup
+
+**Decision**: `/start` оставлен как нейтральный Left4Casino entrypoint без reply keyboard и `/spin` hints, `/help` переписан под текущие групповые команды, а Bot API menu переведён на `all_group_chats` с очисткой default/private scopes.
+
+**Reasoning**: После fork-а старые demo/GitHub/MasterGroosha тексты и private menu вводили игроков и stage smoke checks в заблуждение. Минимальная безопасная правка меняет только пользовательский контракт и тесты, не трогая production/stage runtime, settings, env или БД.
+
+**Result**: TASK-020 завершена и заархивирована. Добавлены unit/integration проверки отсутствия клавиатуры в `/start`, актуального group menu и stage-parity rejection для stale `/spin`/fork/menu regressions. Валидация зелёная: targeted pytest, `./scripts/test.sh`, `./scripts/lint.sh`.
+
+**References**: TASK-020, `docs/specs/archive/TASK-020_COMMAND_CONTRACT_CLEANUP.md`, `bot/handlers/default_commands.py`, `bot/ui_commands.py`, `bot/locale/*/strings.ftl`, `scripts/telegram_e2e_smoke.py`.
+
+---
+
 ## 2026-05-10: TASK-019 E2E staging feedback coverage
 
 **Decision**: Расширен `telegram_e2e_smoke.py` сценариями `stage-parity`, `economy` и `schedule-readiness`, опциональной проверкой меню stage-бота через `TELEGRAM_E2E_STAGE_BOT_TOKEN`, явным guard `TELEGRAM_E2E_ALLOW_DB_MUTATION=1` для stage DB setup и циклом спинов до первого win с лимитом.

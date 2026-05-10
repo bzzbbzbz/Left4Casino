@@ -1,6 +1,6 @@
 """Integration tests for bot handlers (end-to-end command flows)."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -29,19 +29,19 @@ async def test_start_command_creates_user(test_db, mock_telegram_message) -> Non
     l10n.format_value = lambda key, opts=None: f"Points: {opts.get('points', 0) if opts else 0}"
     game_config = _game_config()
 
-    with patch("bot.handlers.default_commands.get_spin_keyboard", return_value=None):
-        await cmd_start(
-            mock_telegram_message,
-            state,
-            l10n,
-            game_config,
-            test_db,
-        )
+    await cmd_start(
+        mock_telegram_message,
+        state,
+        l10n,
+        game_config,
+        test_db,
+    )
 
     user = await test_db.get_user(mock_telegram_message.from_user.id)
     assert user is not None
     assert user.balance == 50
     assert mock_telegram_message.answer.called
+    assert "reply_markup" not in mock_telegram_message.answer.call_args.kwargs
 
 
 @pytest.mark.integration
