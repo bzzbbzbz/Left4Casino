@@ -3,7 +3,7 @@
 **ID**: TASK-016  
 **Title**: Миграция денежных полей на точное big-int хранение без потери малых сумм  
 **Priority**: HIGH  
-**Status**: SPEC_READY  
+**Status**: READY_TO_MERGE  
 **Created**: 2026-02-22  
 **Updated**: 2026-05-09  
 **Assignee**: cursor-agent

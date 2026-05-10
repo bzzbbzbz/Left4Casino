@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-05-10: TASK-016 implementation ready for merge
+
+**Decision**: `TASK-016` implementation metadata is promoted to `READY_TO_MERGE` without archiving until merge.
+
+**Result**: Stage dry-run used copied production DB at `/opt/left4casino/python-runner-stage/data/task-016-dry-run/casino.from-prod.20260510T090705Z.db`; validation result: PASS.
+
+**References**: TASK-016, `docs/specs/TASK-016_BIGINT_MONEY_STORAGE.md`, `status.yaml`.
+
+---
+
 ## 2026-05-09: TASK-017 Daily Code Quality Report implementation
 
 **Decision**: Добавлен opt-in `CodeQualityReportService`: по расписанию он выгружает Docker-логи контейнера за configurable `log_since`/`log_until`, фильтрует строки Python-regex `grep_pattern`, редактирует секреты, запускает `opencode run`, поддерживает один повторный проход после `REQUEST_LOGS: <since> <until>`, сохраняет приватные артефакты и отправляет админу Telegram `send_message` чанками до 4096 символов.

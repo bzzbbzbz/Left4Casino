@@ -82,7 +82,7 @@ tasks:
     priority: HIGH
   - id: TASK-016
     name: "Big integer money storage for 10^24+ balances"
-    status: SPEC_READY
+    status: READY_TO_MERGE
     spec: docs/specs/TASK-016_BIGINT_MONEY_STORAGE.md
     assignee: cursor-agent
     priority: HIGH
