@@ -234,9 +234,12 @@ async def apply_migration(
             print(f"  TASK-016 money migration report: {report}")
             return
         fk_row = await (await db.execute("PRAGMA foreign_keys")).fetchone()
+        legacy_alter_row = await (await db.execute("PRAGMA legacy_alter_table")).fetchone()
         foreign_keys_enabled = bool(fk_row and fk_row[0])
+        legacy_alter_enabled = bool(legacy_alter_row and legacy_alter_row[0])
         try:
             await db.execute("PRAGMA foreign_keys = OFF")
+            await db.execute("PRAGMA legacy_alter_table = ON")
             await db.execute("BEGIN IMMEDIATE")
             report = await apply_bigint_money_migration(db)
             print(f"  TASK-016 money migration report: {report}")
@@ -246,11 +249,15 @@ async def apply_migration(
                 (version, migration_file.name),
             )
             await db.commit()
+            if not legacy_alter_enabled:
+                await db.execute("PRAGMA legacy_alter_table = OFF")
             if foreign_keys_enabled:
                 await db.execute("PRAGMA foreign_keys = ON")
             print(f"  ✓ Migration {version} applied successfully")
         except Exception:
             await db.rollback()
+            if not legacy_alter_enabled:
+                await db.execute("PRAGMA legacy_alter_table = OFF")
             if foreign_keys_enabled:
                 await db.execute("PRAGMA foreign_keys = ON")
             raise

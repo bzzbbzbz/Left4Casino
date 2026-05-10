@@ -21,6 +21,11 @@ MONEY_COLUMNS = {
 }
 
 
+async def _foreign_key_targets(db: aiosqlite.Connection, table: str) -> list[str]:
+    rows = await (await db.execute(f"PRAGMA foreign_key_list({table})")).fetchall()
+    return [row[2] for row in rows]
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_migration_converts_old_integer_money_schema_to_text() -> None:
@@ -53,6 +58,25 @@ async def test_migration_converts_old_integer_money_schema_to_text() -> None:
                     session_id TEXT PRIMARY KEY, user_id INTEGER, status TEXT DEFAULT 'active',
                     started_at DATETIME DEFAULT CURRENT_TIMESTAMP, finished_at DATETIME,
                     ai_score INTEGER, reward_amount INTEGER,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )"""
+            )
+            await db.execute(
+                """CREATE TABLE ai_dialogue_messages (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES ai_credit_sessions (session_id)
+                )"""
+            )
+            await db.execute(
+                """CREATE TABLE user_groups (
+                    user_id INTEGER,
+                    chat_id INTEGER,
+                    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, chat_id),
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )"""
             )
@@ -95,6 +119,10 @@ async def test_migration_converts_old_integer_money_schema_to_text() -> None:
                 (huge,),
             )
             await db.execute(
+                "INSERT INTO ai_dialogue_messages (session_id, role, content) VALUES ('s1', 'user', 'hello')"
+            )
+            await db.execute("INSERT INTO user_groups (user_id, chat_id) VALUES (1, -100)")
+            await db.execute(
                 "INSERT INTO dice_challenges (challenge_id, chat_id, initiator_id, bet_amount, initiator_going_debt) VALUES ('c1', 1, 1, 50, 1)"
             )
             await db.execute(
@@ -124,6 +152,13 @@ async def test_migration_converts_old_integer_money_schema_to_text() -> None:
             assert challenge_cols["initiator_going_debt"].upper() == "INTEGER"
             assert await (await db.execute("SELECT COUNT(*) FROM users")).fetchone() == (2,)
             assert await (await db.execute("SELECT COUNT(*) FROM event_history")).fetchone() == (2,)
+            assert await (
+                await db.execute("SELECT COUNT(*) FROM ai_credit_sessions")
+            ).fetchone() == (2,)
+            assert await (
+                await db.execute("SELECT COUNT(*) FROM ai_dialogue_messages")
+            ).fetchone() == (1,)
+            assert await (await db.execute("SELECT COUNT(*) FROM user_groups")).fetchone() == (1,)
             assert await (await db.execute("SELECT COUNT(*) FROM dice_challenges")).fetchone() == (
                 2,
             )
@@ -144,12 +179,30 @@ async def test_migration_converts_old_integer_money_schema_to_text() -> None:
                 )
             ).fetchone()
             assert challenge_row == ("50", 1)
-            assert [
-                row[2]
-                for row in await (
-                    await db.execute("PRAGMA foreign_key_list(event_history)")
-                ).fetchall()
-            ] == ["users"]
+            event_row = await (
+                await db.execute("SELECT amount FROM event_history WHERE event_id = 'e2'")
+            ).fetchone()
+            assert event_row == (str(10**24),)
+            reward_row = await (
+                await db.execute(
+                    "SELECT reward_amount FROM ai_credit_sessions WHERE session_id = 's2'"
+                )
+            ).fetchone()
+            assert reward_row == (str(10**24),)
+            challenge_huge_row = await (
+                await db.execute("SELECT bet_amount FROM dice_challenges WHERE challenge_id = 'c2'")
+            ).fetchone()
+            assert challenge_huge_row == (str(10**24),)
+            debt_row = await (
+                await db.execute("SELECT amount FROM player_debts WHERE debt_id = 'd1'")
+            ).fetchone()
+            assert debt_row == ("50",)
+            assert await _foreign_key_targets(db, "event_history") == ["users"]
+            assert await _foreign_key_targets(db, "ai_credit_sessions") == ["users"]
+            assert await _foreign_key_targets(db, "dice_challenges") == ["users"]
+            assert await _foreign_key_targets(db, "player_debts") == ["users", "users"]
+            assert await _foreign_key_targets(db, "user_groups") == ["users"]
+            assert await _foreign_key_targets(db, "ai_dialogue_messages") == ["ai_credit_sessions"]
     finally:
         os.unlink(path)
 
