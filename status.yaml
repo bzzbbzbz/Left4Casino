@@ -110,3 +110,9 @@ tasks:
     spec: docs/specs/archive/TASK-020_COMMAND_CONTRACT_CLEANUP.md
     assignee: cursor-agent
     priority: HIGH
+  - id: TASK-021
+    name: "Event E2E coverage and /start removal"
+    status: DONE
+    spec: docs/specs/archive/TASK-021_EVENT_E2E_NO_START.md
+    assignee: cursor-agent
+    priority: HIGH

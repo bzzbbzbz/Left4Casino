@@ -31,7 +31,15 @@ from bot.config_reader import (
 )
 from bot.db import Database
 from bot.fluent_loader import get_fluent_localization
-from bot.handlers import ai_credit, default_commands, dice_fight, group_games, safe, transfer
+from bot.handlers import (
+    ai_credit,
+    default_commands,
+    dice_fight,
+    e2e_hooks,
+    group_games,
+    safe,
+    transfer,
+)
 from bot.logs import get_structlog_config
 from bot.middlewares.logging import LoggingMiddleware
 from bot.middlewares.restrictions import ChatRestrictionMiddleware
@@ -164,6 +172,8 @@ async def main():
     dp.include_router(ai_credit.router)
     dp.include_router(dice_fight.router)
     dp.include_router(safe.router)
+    if e2e_hooks.e2e_hooks_enabled():
+        dp.include_router(e2e_hooks.router)
 
     # Register throttling middleware
     dp.message.middleware(

@@ -197,6 +197,16 @@ class FakeOffsetAwareReplyBot(FakeNoReplyBot):
         }
 
 
+class FakeStartIgnoredReplyBot(FakeOffsetAwareReplyBot):
+    async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+        self.sent_texts.append(text)
+        self.update_id += 1
+        if not text.startswith("/start"):
+            reply_text = f"fresh reply for {text.split('@', maxsplit=1)[0]}"
+            self.updates.append(self._make_update(self.update_id, reply_text, chat_id=chat_id))
+        return {"message_id": self.update_id, "chat": {"id": chat_id}, "text": text}
+
+
 def write_stage_settings(path: Path, allowed_chat_ids: list[int]) -> None:
     ids = ", ".join(str(chat_id) for chat_id in allowed_chat_ids)
     path.write_text(
@@ -244,6 +254,15 @@ def create_user_db(db_path: Path, user_id: int = 42) -> None:
         conn.execute(
             "INSERT INTO users (user_id, balance, safe_balance, bid) VALUES (?,?,?,?)",
             (user_id, "50", "0", "1"),
+        )
+
+
+def create_event_db(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE event_history ("
+            "event_id TEXT, user_id INTEGER, event_type TEXT, amount TEXT, "
+            "metadata TEXT, chat_id INTEGER)"
         )
 
 
@@ -369,19 +388,39 @@ async def test_run_scenario_drains_stale_updates_before_sending_steps(tmp_path: 
         stage_bot_username="Left4CasinoStageBot",
         chat_title="Stage chat",
     )
-    api = FakeOffsetAwareReplyBot()
+    api = FakeStartIgnoredReplyBot()
 
     results = await smoke.run_scenario(config, api, preflight)
 
     assert api.update_offsets[0] is None
     assert 2 in api.update_offsets
     assert [result["reply_texts"] for result in results] == [
-        ["fresh reply for /start"],
+        [],
         ["fresh reply for /balance"],
     ]
     assert all(
         "stale prior reply" not in reply for result in results for reply in result["reply_texts"]
     )
+
+
+@pytest.mark.asyncio
+async def test_stage_parity_fails_if_start_gets_any_stage_reply(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_user_db(db_path)
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_SCENARIO"] = "stage-parity"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    config = smoke.E2EConfig.from_env(env)
+    preflight = smoke.PreflightResult(
+        -1001, 42, "TesterBot", 777, "Left4CasinoStageBot", "Stage chat"
+    )
+
+    with pytest.raises(smoke.SmokeFailureError, match="expected no reply"):
+        await smoke.run_scenario(config, FakeOffsetAwareReplyBot(), preflight)
 
 
 def test_db_assertions_decode_text_money(tmp_path: Path) -> None:
@@ -403,6 +442,77 @@ def test_db_assertions_decode_text_money(tmp_path: Path) -> None:
     assert result["after"]["balance"] == 10**24
     assert result["after"]["safe_balance"] == 250
     assert result["after"]["event_count"] == 1
+
+
+def test_smoke_steps_start_with_balance_not_start() -> None:
+    steps = smoke.build_smoke_steps("Left4CasinoStageBot")
+
+    assert steps[0].name == "balance"
+    assert all(step.text is None or not step.text.startswith("/start") for step in steps)
+
+
+def test_event_hook_scenario_requires_explicit_opt_in(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_SCENARIO"] = "events"
+
+    config = smoke.E2EConfig.from_env(env)
+
+    assert config.scenario == "events"
+    assert config.allow_event_hooks is False
+
+
+def test_happy_and_heist_metadata_assertion_helpers(tmp_path: Path) -> None:
+    db_path = tmp_path / "casino.db"
+    create_event_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO event_history VALUES (?,?,?,?,?,?)",
+            (
+                "happy-win",
+                42,
+                "happy_moment_win",
+                "14",
+                json.dumps(
+                    {
+                        "happy_moment_multiplier": 2.0,
+                        "happy_moment_name": "E2E Happy Moment",
+                    }
+                ),
+                -1001,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO event_history VALUES (?,?,?,?,?,?)",
+            ("contrib", 42, "heist_contribution", "-1", json.dumps({"pot_after": 1}), -1001),
+        )
+        conn.execute(
+            "INSERT INTO event_history VALUES (?,?,?,?,?,?)",
+            (
+                "loss",
+                42,
+                "loss",
+                "-1",
+                json.dumps({"during_heist": True, "heist_pot_after": 1}),
+                -1001,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO event_history VALUES (?,?,?,?,?,?)",
+            ("win", 42, "heist_win", "1", json.dumps({"total_pot": 1}), -1001),
+        )
+
+    happy = smoke.latest_event_after(db_path, "happy_moment_win", 0, user_id=42, chat_id=-1001)
+    contribution = smoke.latest_event_after(db_path, "heist_contribution", 0)
+    loss = smoke.latest_event_after(db_path, "loss", 0)
+    win = smoke.latest_event_after(db_path, "heist_win", 0)
+
+    assert smoke.assert_happy_event_metadata(happy)["happy_moment_name"] == "E2E Happy Moment"  # type: ignore[arg-type]
+    assert (
+        smoke.assert_heist_event_metadata(contribution, loss, win)["loss"]["during_heist"] is True
+    )
 
 
 def test_smoke_db_assertion_still_requires_state_delta(tmp_path: Path) -> None:
@@ -427,10 +537,10 @@ async def test_stage_parity_execute_does_not_require_db_state_delta(tmp_path: Pa
     env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
     config = smoke.E2EConfig.from_env(env)
 
-    report = await smoke.execute(config, FakeReplyEconomyBot(db_path), stage_api=None)
+    report = await smoke.execute(config, FakeStartIgnoredReplyBot(), stage_api=None)
 
     assert report.ok is True
-    assert [step["name"] for step in report.steps] == ["start-no-legacy", "balance"]
+    assert [step["name"] for step in report.steps] == ["start-unhandled", "balance"]
     assert report.db_assertions is not None
     assert report.db_assertions["skipped"].startswith("stage-parity validates")
     assert report.db_assertions["before"] == report.db_assertions["after"]
@@ -590,31 +700,38 @@ async def test_command_menu_validation_uses_optional_stage_token_api() -> None:
     class FakeStageApi(FakeNoReplyBot):
         def __init__(self) -> None:
             super().__init__()
-            self.scope: dict[str, Any] | None = None
+            self.scopes: list[dict[str, Any] | None] = []
 
         async def get_my_commands(
             self, scope: dict[str, Any] | None = None
         ) -> list[dict[str, Any]]:
-            self.scope = scope
-            return [
-                {"command": "balance"},
-                {"command": "bid"},
-                {"command": "safe"},
-                {"command": "stats"},
-                {"command": "top"},
-                {"command": "dice"},
-                {"command": "take"},
-                {"command": "give"},
-                {"command": "credit"},
-                {"command": "help"},
-            ]
+            self.scopes.append(scope)
+            if scope == {"type": "all_group_chats"}:
+                return [
+                    {"command": "balance"},
+                    {"command": "bid"},
+                    {"command": "safe"},
+                    {"command": "stats"},
+                    {"command": "top"},
+                    {"command": "dice"},
+                    {"command": "take"},
+                    {"command": "give"},
+                    {"command": "credit"},
+                    {"command": "help"},
+                ]
+            return []
 
     api = FakeStageApi()
     result = await smoke.validate_stage_command_menu(api)
 
     assert result["missing"] == []
     assert result["scope"] == {"type": "all_group_chats"}
-    assert api.scope == {"type": "all_group_chats"}
+    assert api.scopes == [
+        {"type": "default"},
+        {"type": "all_private_chats"},
+        {"type": "all_group_chats"},
+    ]
+    assert result["scopes"]["default"] == []
     assert await smoke.validate_stage_command_menu(None) == {
         "skipped": "TELEGRAM_E2E_STAGE_BOT_TOKEN not set"
     }
@@ -626,6 +743,8 @@ async def test_command_menu_validation_rejects_stale_advertised_commands() -> No
         async def get_my_commands(
             self, scope: dict[str, Any] | None = None
         ) -> list[dict[str, Any]]:
+            if scope != {"type": "all_group_chats"}:
+                return []
             return [
                 {"command": "balance"},
                 {"command": "bid"},
@@ -640,7 +759,34 @@ async def test_command_menu_validation_rejects_stale_advertised_commands() -> No
                 {"command": "spin"},
             ]
 
-    with pytest.raises(smoke.SmokeFailureError, match="stale commands: spin"):
+    with pytest.raises(smoke.SmokeFailureError, match="stale commands in all_group_chats: spin"):
+        await smoke.validate_stage_command_menu(FakeStageApi())
+
+
+@pytest.mark.asyncio
+async def test_command_menu_validation_rejects_start_in_default_scope() -> None:
+    class FakeStageApi(FakeNoReplyBot):
+        async def get_my_commands(
+            self, scope: dict[str, Any] | None = None
+        ) -> list[dict[str, Any]]:
+            if scope == {"type": "default"}:
+                return [{"command": "start"}]
+            if scope == {"type": "all_group_chats"}:
+                return [
+                    {"command": "balance"},
+                    {"command": "bid"},
+                    {"command": "safe"},
+                    {"command": "stats"},
+                    {"command": "top"},
+                    {"command": "dice"},
+                    {"command": "take"},
+                    {"command": "give"},
+                    {"command": "credit"},
+                    {"command": "help"},
+                ]
+            return []
+
+    with pytest.raises(smoke.SmokeFailureError, match="default: start"):
         await smoke.validate_stage_command_menu(FakeStageApi())
 
 

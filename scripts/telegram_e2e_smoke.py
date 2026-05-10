@@ -37,6 +37,7 @@ ENV_DRY_RUN = "TELEGRAM_E2E_DRY_RUN"
 ENV_ALLOWED_DB_PREFIX = "TELEGRAM_E2E_ALLOWED_DB_PREFIX"
 ENV_SCENARIO = "TELEGRAM_E2E_SCENARIO"
 ENV_ALLOW_DB_MUTATION = "TELEGRAM_E2E_ALLOW_DB_MUTATION"
+ENV_ALLOW_EVENT_HOOKS = "TELEGRAM_E2E_ALLOW_EVENT_HOOKS"
 ENV_MAX_SPINS_UNTIL_WIN = "TELEGRAM_E2E_MAX_SPINS_UNTIL_WIN"
 ENV_SCHEDULE_STRICT = "TELEGRAM_E2E_SCHEDULE_STRICT"
 
@@ -70,6 +71,7 @@ class E2EConfig:
     allowed_db_prefix: Path = Path(DEFAULT_STAGE_PREFIX)
     scenario: str = "smoke"
     allow_db_mutation: bool = False
+    allow_event_hooks: bool = False
     max_spins_until_win: int = 20
     schedule_strict: bool = False
 
@@ -89,6 +91,7 @@ class E2EConfig:
         allowed_prefix = Path(env.get(ENV_ALLOWED_DB_PREFIX, DEFAULT_STAGE_PREFIX)).expanduser()
         scenario = env.get(ENV_SCENARIO, "smoke").strip() or "smoke"
         allow_db_mutation = _parse_bool(env.get(ENV_ALLOW_DB_MUTATION, "false"))
+        allow_event_hooks = _parse_bool(env.get(ENV_ALLOW_EVENT_HOOKS, "false"))
         max_spins = _optional_int(env.get(ENV_MAX_SPINS_UNTIL_WIN), ENV_MAX_SPINS_UNTIL_WIN) or 20
         schedule_strict = _parse_bool(env.get(ENV_SCHEDULE_STRICT, "false"))
         if timeout <= 0:
@@ -99,7 +102,14 @@ class E2EConfig:
             raise ConfigError(f"{ENV_MAX_STEPS} must be > 0")
         if max_spins <= 0:
             raise ConfigError(f"{ENV_MAX_SPINS_UNTIL_WIN} must be > 0")
-        if scenario not in {"smoke", "stage-parity", "economy", "schedule-readiness"}:
+        if scenario not in {
+            "smoke",
+            "stage-parity",
+            "economy",
+            "schedule-readiness",
+            "events",
+            "event-flows",
+        }:
             raise ConfigError(f"unsupported scenario: {scenario}")
         return cls(
             tester_token=token,
@@ -115,6 +125,7 @@ class E2EConfig:
             allowed_db_prefix=allowed_prefix,
             scenario=scenario,
             allow_db_mutation=allow_db_mutation,
+            allow_event_hooks=allow_event_hooks,
             max_spins_until_win=max_spins,
             schedule_strict=schedule_strict,
         )
@@ -373,7 +384,6 @@ async def run_preflight(config: E2EConfig, api: BotApiProtocol) -> PreflightResu
 def build_smoke_steps(stage_bot_username: str) -> list[ScenarioStep]:
     suffix = f"@{_normalize_username(stage_bot_username)}"
     return [
-        ScenarioStep("start", "message", f"/start{suffix}"),
         ScenarioStep("balance", "message", f"/balance{suffix}"),
         ScenarioStep("bid", "message", f"/bid{suffix} 1"),
         ScenarioStep("safe", "message", f"/safe{suffix}"),
@@ -386,7 +396,7 @@ def build_smoke_steps(stage_bot_username: str) -> list[ScenarioStep]:
 def build_stage_parity_steps(stage_bot_username: str) -> list[ScenarioStep]:
     suffix = f"@{_normalize_username(stage_bot_username)}"
     return [
-        ScenarioStep("start-no-legacy", "message_optional_reply", f"/start{suffix}"),
+        ScenarioStep("start-unhandled", "message_optional_reply", f"/start{suffix}"),
         ScenarioStep("balance", "message", f"/balance{suffix}"),
     ]
 
@@ -422,6 +432,8 @@ def build_scenario_steps(config: E2EConfig) -> list[ScenarioStep]:
             config.stage_bot_username, include_spin_loop=config.max_spins_until_win > 0
         )
     if config.scenario == "schedule-readiness":
+        return []
+    if config.scenario in {"events", "event-flows"}:
         return []
     return build_smoke_steps(config.stage_bot_username)
 
@@ -502,14 +514,17 @@ async def run_scenario(
             else:
                 raise SmokeFailureError(f"invalid scenario step: {step}")
             await asyncio.sleep(config.rate_limit_seconds)
+            poll_timeout = config.timeout_seconds
+            if step.name == "start-unhandled":
+                poll_timeout = min(config.timeout_seconds, 2.0)
             replies, update_offset = await poll_stage_replies(
                 api=api,
                 reply_filter=reply_filter,
                 update_offset=update_offset,
-                timeout_seconds=config.timeout_seconds,
+                timeout_seconds=poll_timeout,
             )
-            if step.name == "start-no-legacy":
-                assert_no_legacy_start_reply(replies)
+            if step.name == "start-unhandled":
+                assert_start_unhandled(replies)
             if not replies:
                 if step.action == "message_optional_reply":
                     db_validated = False
@@ -685,6 +700,12 @@ def dice_step_db_changed(db_path: Path, tester_user_id: int, before: dict[str, A
     if before is None:
         return after["event_count"] > 0
     return after["event_count"] > before["event_count"] or after["balance"] != before["balance"]
+
+
+def assert_start_unhandled(replies: list[dict[str, Any]]) -> None:
+    assert_no_legacy_start_reply(replies)
+    if replies:
+        raise SmokeFailureError("/start was handled by the stage bot; expected no reply")
 
 
 def assert_no_legacy_start_reply(replies: list[dict[str, Any]]) -> None:
@@ -990,6 +1011,387 @@ async def run_spin_until_bankruptcy(
     raise SmokeFailureError(f"no bankruptcy after {config.max_spins_until_win} controlled spins")
 
 
+async def run_event_flows(
+    config: E2EConfig, api: BotApiProtocol, preflight: PreflightResult
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not config.allow_event_hooks:
+        raise ConfigError(f"{ENV_ALLOW_EVENT_HOOKS}=1 is required for events scenario")
+    if not config.allow_db_mutation:
+        raise ConfigError(f"{ENV_ALLOW_DB_MUTATION}=1 is required for events scenario")
+    suffix = f"@{_normalize_username(preflight.stage_bot_username)}"
+    reply_filter = StageReplyFilter(
+        stage_bot_username=preflight.stage_bot_username,
+        stage_bot_id=preflight.stage_bot_id,
+        target_chat_id=preflight.target_chat_id,
+    )
+    update_offset = await drain_current_update_offset(api)
+    steps: list[dict[str, Any]] = []
+    assertions: dict[str, Any] = {}
+    happy_started = False
+    heist_started = False
+    before_rowid = max_event_rowid(config.stage_db_path)
+    try:
+        reset_tester_state_for_stage(config, preflight.tester_bot_id, 50)
+        await _send_hook_step(
+            api,
+            reply_filter,
+            preflight,
+            f"/e2e_happy_start{suffix}",
+            "e2e-happy-start",
+            config,
+            steps,
+            update_offset,
+        )
+        update_offset = steps[-1].pop("update_offset", update_offset)
+        happy_started = True
+        happy_start = latest_event_after(config.stage_db_path, "happy_moment_start", before_rowid)
+        if happy_start is None:
+            raise SmokeFailureError("happy_moment_start event was not recorded")
+
+        happy_result = await run_spin_until_happy_win(
+            config, api, preflight, reply_filter, update_offset, before_rowid
+        )
+        update_offset = happy_result.pop("update_offset", update_offset)
+        steps.append(happy_result)
+        happy_win = latest_event_after(
+            config.stage_db_path,
+            "happy_moment_win",
+            before_rowid,
+            user_id=preflight.tester_bot_id,
+            chat_id=preflight.target_chat_id,
+        )
+        if happy_win is None:
+            raise SmokeFailureError("happy_moment_win event was not recorded")
+        assert_happy_event_metadata(happy_win)
+        if not _reply_or_metadata_has_happy_marker(happy_result["reply_texts"], happy_win):
+            raise SmokeFailureError(
+                "happy win reply/metadata did not include E2E Happy Moment marker"
+            )
+
+        await _send_hook_step(
+            api,
+            reply_filter,
+            preflight,
+            f"/e2e_happy_end{suffix}",
+            "e2e-happy-end",
+            config,
+            steps,
+            update_offset,
+        )
+        update_offset = steps[-1].pop("update_offset", update_offset)
+        happy_started = False
+
+        reset_tester_state_for_stage(config, preflight.tester_bot_id, 50)
+        heist_before = max_event_rowid(config.stage_db_path)
+        await _send_hook_step(
+            api,
+            reply_filter,
+            preflight,
+            f"/e2e_heist_start{suffix}",
+            "e2e-heist-start",
+            config,
+            steps,
+            update_offset,
+        )
+        update_offset = steps[-1].pop("update_offset", update_offset)
+        heist_started = True
+        heist_start = latest_event_after(
+            config.stage_db_path, "heist_start", heist_before, chat_id=preflight.target_chat_id
+        )
+        if heist_start is None:
+            raise SmokeFailureError("heist_start event was not recorded")
+
+        heist_spin = await run_spin_until_heist_loss(
+            config, api, preflight, reply_filter, update_offset, heist_before
+        )
+        update_offset = heist_spin.pop("update_offset", update_offset)
+        steps.append(heist_spin)
+
+        await _send_hook_step(
+            api,
+            reply_filter,
+            preflight,
+            f"/e2e_heist_end{suffix}",
+            "e2e-heist-end",
+            config,
+            steps,
+            update_offset,
+        )
+        update_offset = steps[-1].pop("update_offset", update_offset)
+        heist_started = False
+
+        heist_contribution = latest_event_after(
+            config.stage_db_path,
+            "heist_contribution",
+            heist_before,
+            user_id=preflight.tester_bot_id,
+            chat_id=preflight.target_chat_id,
+        )
+        loss = latest_event_after(
+            config.stage_db_path,
+            "loss",
+            heist_before,
+            user_id=preflight.tester_bot_id,
+            chat_id=preflight.target_chat_id,
+        )
+        heist_win = latest_event_after(config.stage_db_path, "heist_win", heist_before)
+        heist_commission = latest_event_after(
+            config.stage_db_path, "heist_commission", heist_before, chat_id=preflight.target_chat_id
+        )
+        for event_name, event in {
+            "heist_contribution": heist_contribution,
+            "loss": loss,
+            "heist_win": heist_win,
+            "heist_commission": heist_commission,
+        }.items():
+            if event is None:
+                raise SmokeFailureError(f"{event_name} event was not recorded")
+        assert_heist_event_metadata(heist_contribution, loss, heist_win)
+        assertions = {
+            "happy_moment_start": happy_start,
+            "happy_moment_win": happy_win,
+            "heist_start": heist_start,
+            "heist_contribution": heist_contribution,
+            "heist_loss": loss,
+            "heist_win": heist_win,
+            "heist_commission": heist_commission,
+        }
+        return steps, assertions
+    except Exception:
+        if happy_started:
+            await _best_effort_hook(api, preflight.target_chat_id, f"/e2e_happy_end{suffix}")
+        if heist_started:
+            await _best_effort_hook(api, preflight.target_chat_id, f"/e2e_heist_end{suffix}")
+        raise
+
+
+async def _send_hook_step(
+    api: BotApiProtocol,
+    reply_filter: StageReplyFilter,
+    preflight: PreflightResult,
+    text: str,
+    name: str,
+    config: E2EConfig,
+    steps: list[dict[str, Any]],
+    update_offset: int | None,
+) -> None:
+    sent = await api.send_message(preflight.target_chat_id, text)
+    await asyncio.sleep(config.rate_limit_seconds)
+    replies, new_offset = await poll_stage_replies(
+        api=api,
+        reply_filter=reply_filter,
+        update_offset=update_offset,
+        timeout_seconds=config.timeout_seconds,
+    )
+    if not replies:
+        raise SmokeFailureError(f"timeout waiting for stage bot reply after {name}")
+    steps.append(
+        {
+            "name": name,
+            "action": "event_hook",
+            "sent_message_id": sent.get("message_id") if isinstance(sent, dict) else None,
+            "reply_count": len(replies),
+            "reply_texts": [_message_text(reply) for reply in replies],
+            "db_validated": True,
+            "db_assertion": None,
+            "update_offset": new_offset,
+        }
+    )
+
+
+async def _best_effort_hook(api: BotApiProtocol, chat_id: int, text: str) -> None:
+    try:
+        await api.send_message(chat_id, text)
+    except Exception:
+        return
+
+
+async def run_spin_until_happy_win(
+    config: E2EConfig,
+    api: BotApiProtocol,
+    preflight: PreflightResult,
+    reply_filter: StageReplyFilter,
+    update_offset: int | None,
+    before_rowid: int,
+) -> dict[str, Any]:
+    current_offset = update_offset
+    reply_texts: list[str] = []
+    sent_ids: list[int] = []
+    for spin in range(1, config.max_spins_until_win + 1):
+        sent = await api.send_dice(preflight.target_chat_id, "🎰")
+        if isinstance(sent.get("message_id"), int):
+            sent_ids.append(sent["message_id"])
+        await asyncio.sleep(config.rate_limit_seconds)
+        replies, current_offset = await poll_stage_replies(
+            api=api,
+            reply_filter=reply_filter,
+            update_offset=current_offset,
+            timeout_seconds=config.timeout_seconds,
+        )
+        reply_texts.extend(_message_text(reply) for reply in replies)
+        if latest_event_after(
+            config.stage_db_path,
+            "happy_moment_win",
+            before_rowid,
+            user_id=preflight.tester_bot_id,
+            chat_id=preflight.target_chat_id,
+        ):
+            return {
+                "name": "spin-until-happy-win",
+                "action": "spin_until_happy_win",
+                "sent_message_id": sent_ids[-1] if sent_ids else None,
+                "reply_count": len(reply_texts),
+                "reply_texts": reply_texts,
+                "db_validated": True,
+                "db_assertion": {"spins": spin},
+                "update_offset": current_offset,
+            }
+    raise SmokeFailureError(f"no happy_moment_win after {config.max_spins_until_win} spins")
+
+
+async def run_spin_until_heist_loss(
+    config: E2EConfig,
+    api: BotApiProtocol,
+    preflight: PreflightResult,
+    reply_filter: StageReplyFilter,
+    update_offset: int | None,
+    before_rowid: int,
+) -> dict[str, Any]:
+    current_offset = update_offset
+    reply_texts: list[str] = []
+    sent_ids: list[int] = []
+    for spin in range(1, config.max_spins_until_win + 1):
+        sent = await api.send_dice(preflight.target_chat_id, "🎰")
+        if isinstance(sent.get("message_id"), int):
+            sent_ids.append(sent["message_id"])
+        await asyncio.sleep(config.rate_limit_seconds)
+        replies, current_offset = await poll_stage_replies(
+            api=api,
+            reply_filter=reply_filter,
+            update_offset=current_offset,
+            timeout_seconds=config.timeout_seconds,
+        )
+        reply_texts.extend(_message_text(reply) for reply in replies)
+        contribution = latest_event_after(
+            config.stage_db_path,
+            "heist_contribution",
+            before_rowid,
+            user_id=preflight.tester_bot_id,
+            chat_id=preflight.target_chat_id,
+        )
+        loss = latest_event_after(
+            config.stage_db_path,
+            "loss",
+            before_rowid,
+            user_id=preflight.tester_bot_id,
+            chat_id=preflight.target_chat_id,
+        )
+        if contribution and loss and _event_metadata(loss).get("during_heist") is True:
+            return {
+                "name": "spin-until-heist-loss",
+                "action": "spin_until_heist_loss",
+                "sent_message_id": sent_ids[-1] if sent_ids else None,
+                "reply_count": len(reply_texts),
+                "reply_texts": reply_texts,
+                "db_validated": True,
+                "db_assertion": {"spins": spin},
+                "update_offset": current_offset,
+            }
+    raise SmokeFailureError(f"no heist contribution/loss after {config.max_spins_until_win} spins")
+
+
+def max_event_rowid(db_path: Path) -> int:
+    if not db_path.exists():
+        return 0
+    with sqlite3.connect(db_path) as conn:
+        if not table_exists(conn, "event_history"):
+            return 0
+        row = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM event_history").fetchone()
+    return int(row[0]) if row else 0
+
+
+def latest_event_after(
+    db_path: Path,
+    event_type: str,
+    after_rowid: int,
+    *,
+    user_id: int | None = None,
+    chat_id: int | None = None,
+) -> dict[str, Any] | None:
+    if not db_path.exists():
+        return None
+    where = ["rowid > ?", "event_type = ?"]
+    params: list[Any] = [after_rowid, event_type]
+    if user_id is not None:
+        where.append("user_id = ?")
+        params.append(user_id)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        columns = get_table_columns(conn, "event_history")
+        if chat_id is not None and "chat_id" in columns:
+            where.append("chat_id = ?")
+            params.append(chat_id)
+        row = conn.execute(
+            f"SELECT rowid, user_id, event_type, amount, metadata, chat_id FROM event_history WHERE {' AND '.join(where)} ORDER BY rowid DESC LIMIT 1",
+            params,
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _event_metadata(event: dict[str, Any] | None) -> dict[str, Any]:
+    if not event:
+        return {}
+    raw = event.get("metadata")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+    except json.JSONDecodeError as exc:
+        raise SmokeFailureError(
+            f"invalid event metadata JSON for {event.get('event_type')}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise SmokeFailureError(f"event metadata is not an object for {event.get('event_type')}")
+    return data
+
+
+def assert_happy_event_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    metadata = _event_metadata(event)
+    if metadata.get("happy_moment_multiplier") != 2.0:
+        raise SmokeFailureError("happy_moment_win metadata missing multiplier 2.0")
+    if metadata.get("happy_moment_name") != "E2E Happy Moment":
+        raise SmokeFailureError("happy_moment_win metadata missing E2E Happy Moment name")
+    return metadata
+
+
+def assert_heist_event_metadata(
+    contribution: dict[str, Any] | None,
+    loss: dict[str, Any] | None,
+    win: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if contribution is None or loss is None or win is None:
+        raise SmokeFailureError("missing heist event for metadata assertions")
+    contribution_meta = _event_metadata(contribution)
+    loss_meta = _event_metadata(loss)
+    win_meta = _event_metadata(win)
+    if contribution_meta.get("pot_after", 0) < 1:
+        raise SmokeFailureError("heist_contribution metadata missing pot_after")
+    if loss_meta.get("during_heist") is not True:
+        raise SmokeFailureError("loss metadata missing during_heist=true")
+    if loss_meta.get("heist_pot_after", 0) < 1:
+        raise SmokeFailureError("loss metadata missing heist_pot_after")
+    if win_meta.get("total_pot", 0) < 1:
+        raise SmokeFailureError("heist_win metadata missing total_pot")
+    return {"contribution": contribution_meta, "loss": loss_meta, "win": win_meta}
+
+
+def _reply_or_metadata_has_happy_marker(reply_texts: list[str], event: dict[str, Any]) -> bool:
+    if any("E2E Happy Moment" in text for text in reply_texts):
+        return True
+    metadata = _event_metadata(event)
+    return metadata.get("happy_moment_name") == "E2E Happy Moment"
+
+
 def read_schedule_readiness(db_path: Path, *, strict: bool = False) -> dict[str, Any]:
     if not db_path.exists():
         if strict:
@@ -1030,18 +1432,29 @@ def read_schedule_readiness(db_path: Path, *, strict: bool = False) -> dict[str,
 async def validate_stage_command_menu(stage_api: BotApiProtocol | None) -> dict[str, Any]:
     if stage_api is None:
         return {"skipped": f"{ENV_STAGE_BOT_TOKEN} not set"}
-    group_scope = {"type": "all_group_chats"}
-    commands = await stage_api.get_my_commands(scope=group_scope)
-    names = [str(command.get("command", "")) for command in commands]
+    scopes = {
+        "default": {"type": "default"},
+        "all_private_chats": {"type": "all_private_chats"},
+        "all_group_chats": {"type": "all_group_chats"},
+    }
     required = {"balance", "bid", "safe", "stats", "top", "dice", "take", "give", "credit", "help"}
     forbidden = {"start", "spin", "stop"}
+    by_scope: dict[str, list[str]] = {}
+    for scope_name, scope in scopes.items():
+        commands = await stage_api.get_my_commands(scope=scope)
+        names = [str(command.get("command", "")) for command in commands]
+        by_scope[scope_name] = names
+        stale = sorted(forbidden.intersection(names))
+        if stale:
+            raise SmokeFailureError(
+                f"stage command menu advertises stale commands in {scope_name}: {', '.join(stale)}"
+            )
+    group_scope = {"type": "all_group_chats"}
+    names = by_scope["all_group_chats"]
     missing = sorted(required.difference(names))
     if missing:
         raise SmokeFailureError(f"stage command menu missing commands: {', '.join(missing)}")
-    stale = sorted(forbidden.intersection(names))
-    if stale:
-        raise SmokeFailureError(f"stage command menu advertises stale commands: {', '.join(stale)}")
-    return {"commands": names, "missing": [], "scope": group_scope}
+    return {"commands": names, "missing": [], "scope": group_scope, "scopes": by_scope}
 
 
 async def execute(
@@ -1056,6 +1469,10 @@ async def execute(
             config.stage_db_path, strict=config.schedule_strict
         )
         report.db_assertions = {"skipped": "schedule-readiness is read-only"}
+        report.ok = True
+        return report
+    if config.scenario in {"events", "event-flows"}:
+        report.steps, report.db_assertions = await run_event_flows(config, api, preflight)
         report.ok = True
         return report
     before = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
@@ -1145,7 +1562,7 @@ def _message_text(message: dict[str, Any]) -> str:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run TASK-019 staging Telegram E2E smoke")
+    parser = argparse.ArgumentParser(description="Run TASK-019/TASK-021 staging Telegram E2E smoke")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -1153,7 +1570,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenario",
-        choices=["smoke", "stage-parity", "economy", "schedule-readiness"],
+        choices=["smoke", "stage-parity", "economy", "schedule-readiness", "events", "event-flows"],
         help=f"Override {ENV_SCENARIO}",
     )
     return parser.parse_args(argv)

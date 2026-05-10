@@ -1,6 +1,5 @@
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
-from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove
 from fluent.runtime import FluentLocalization
 
@@ -10,30 +9,6 @@ from bot.utils.formatters import format_number
 
 flags = {"throttling_key": "default"}
 router = Router()
-
-
-@router.message(Command("start"), flags=flags)
-async def cmd_start(
-    message: Message,
-    state: FSMContext,
-    l10n: FluentLocalization,
-    game_config: GameConfig,
-    db: Database,
-):
-    # Register user in DB to ensure they can be found by nickname
-    if message.from_user.username:
-        await db.register_user(message.from_user.id, message.from_user.username)
-
-    # Get actual balance from DB (or initialize if new)
-    balance = await db.get_balance(message.from_user.id, game_config.starting_points)
-
-    # Sync FSM state with DB balance (optional, if we transition fully to DB)
-    # But for now, let's keep FSM updated just in case
-    await state.update_data(score=balance)
-
-    start_text = l10n.format_value("start-text", {"points": balance})
-
-    await message.answer(start_text)
 
 
 @router.message(Command("stop"), flags=flags)

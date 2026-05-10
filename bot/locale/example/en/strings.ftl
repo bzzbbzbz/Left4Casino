@@ -1,10 +1,3 @@
-start-text =
-    <b>Left4Casino is active.</b>
-    Your balance: { $points } points.
-
-    The bot works in group chats: bets, safe balance, transfers, dice duels and slots via Telegram 🎰 dice.
-    Command list: /help
-
 help-text =
     <b>Left4Casino commands</b>
 

@@ -1,11 +1,9 @@
 """Integration tests for bot handlers (end-to-end command flows)."""
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from bot.config_reader import GameConfig
-from bot.handlers.default_commands import cmd_start
+from bot.handlers import default_commands
 from bot.handlers.group_games import cmd_balance
 
 
@@ -20,28 +18,14 @@ def _game_config() -> GameConfig:
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
-async def test_start_command_creates_user(test_db, mock_telegram_message) -> None:
-    """Test /start command creates user in database and sends reply."""
-    state = MagicMock()
-    state.update_data = AsyncMock()
-    l10n = MagicMock()
-    l10n.format_value = lambda key, opts=None: f"Points: {opts.get('points', 0) if opts else 0}"
-    game_config = _game_config()
-
-    await cmd_start(
-        mock_telegram_message,
-        state,
-        l10n,
-        game_config,
-        test_db,
-    )
-
-    user = await test_db.get_user(mock_telegram_message.from_user.id)
-    assert user is not None
-    assert user.balance == 50
-    assert mock_telegram_message.answer.called
-    assert "reply_markup" not in mock_telegram_message.answer.call_args.kwargs
+def test_start_command_is_absent_from_default_router() -> None:
+    """/start is intentionally unhandled: no handler function or router registration."""
+    assert not hasattr(default_commands, "cmd_start")
+    registered_callbacks = [
+        handler.callback.__name__
+        for handler in default_commands.router.observers["message"].handlers
+    ]
+    assert "cmd_start" not in registered_callbacks
 
 
 @pytest.mark.integration
