@@ -348,10 +348,14 @@ async def run_scenario(
         if index > config.max_steps:
             raise SmokeFailureError("max steps exceeded")
         sent: dict[str, Any] | None = None
+        dice_before: dict[str, Any] | None = None
+        db_validated = False
         if config.dry_run:
             sent = {"dry_run": True, "text": step.text, "emoji": step.emoji}
             replies: list[dict[str, Any]] = []
         else:
+            if step.action == "dice":
+                dice_before = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
             if step.action == "message" and step.text is not None:
                 sent = await api.send_message(preflight.target_chat_id, step.text)
             elif step.action == "dice" and step.emoji is not None:
@@ -366,9 +370,14 @@ async def run_scenario(
                 timeout_seconds=config.timeout_seconds,
             )
             if not replies:
-                raise SmokeFailureError(
-                    f"timeout waiting for stage bot reply after step {step.name}"
-                )
+                if step.action == "dice" and dice_step_db_changed(
+                    config.stage_db_path, preflight.tester_bot_id, dice_before
+                ):
+                    db_validated = True
+                else:
+                    raise SmokeFailureError(
+                        f"timeout waiting for stage bot reply after step {step.name}"
+                    )
         results.append(
             {
                 "name": step.name,
@@ -376,6 +385,7 @@ async def run_scenario(
                 "sent_message_id": sent.get("message_id") if isinstance(sent, dict) else None,
                 "reply_count": len(replies),
                 "reply_texts": [_message_text(reply) for reply in replies],
+                "db_validated": db_validated,
             }
         )
     return results
@@ -448,6 +458,21 @@ def assert_stage_db_state(
     elif after["event_count"] <= 0:
         raise SmokeFailureError("stage DB has no event_history rows for tester user")
     return {"before": before, "after": after}
+
+
+def dice_step_db_changed(db_path: Path, tester_user_id: int, before: dict[str, Any] | None) -> bool:
+    """Return True when the dice step visibly mutated the tester's DB state.
+
+    Telegram dice messages may be processed by the stage bot without a bot reply
+    being visible to the tester bot.  For dice only, an increased event count or a
+    balance change is enough to prove the step was handled.
+    """
+    after = snapshot_user_state(db_path, tester_user_id)
+    if after is None:
+        return False
+    if before is None:
+        return after["event_count"] > 0
+    return after["event_count"] > before["event_count"] or after["balance"] != before["balance"]
 
 
 async def execute(config: E2EConfig, api: BotApiProtocol) -> SmokeReport:

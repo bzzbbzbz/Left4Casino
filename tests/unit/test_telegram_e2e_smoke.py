@@ -26,6 +26,41 @@ def load_smoke_module() -> ModuleType:
 smoke = load_smoke_module()
 
 
+class FakeNoReplyBot:
+    def __init__(self, db_path: Path | None = None, user_id: int = 42) -> None:
+        self.db_path = db_path
+        self.user_id = user_id
+
+    async def get_me(self) -> dict[str, Any]:
+        return {"id": self.user_id, "username": "TesterBot"}
+
+    async def get_chat(self, chat_id: int | str) -> dict[str, Any]:
+        if isinstance(chat_id, str):
+            return {"id": 777, "username": chat_id.removeprefix("@")}
+        return {"id": chat_id, "title": "Stage chat"}
+
+    async def get_chat_member(self, chat_id: int, user_id: int) -> dict[str, Any]:
+        return {"status": "member", "user": {"id": user_id}}
+
+    async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+        return {"message_id": 10, "chat": {"id": chat_id}, "text": text}
+
+    async def send_dice(self, chat_id: int, emoji: str) -> dict[str, Any]:
+        if self.db_path is not None:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("UPDATE users SET balance = ? WHERE user_id = ?", ("49", self.user_id))
+                conn.execute(
+                    "INSERT INTO event_history (user_id, event_type) VALUES (?,?)",
+                    (self.user_id, "loss"),
+                )
+        return {"message_id": 11, "chat": {"id": chat_id}, "dice": {"emoji": emoji, "value": 1}}
+
+    async def get_updates(
+        self, offset: int | None = None, timeout: int = 0, allowed_updates: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        return []
+
+
 def write_stage_settings(path: Path, allowed_chat_ids: list[int]) -> None:
     ids = ", ".join(str(chat_id) for chat_id in allowed_chat_ids)
     path.write_text(
@@ -48,6 +83,27 @@ def base_env(tmp_path: Path, settings_path: Path, db_path: Path) -> dict[str, st
         "TELEGRAM_E2E_DRY_RUN": "true",
         "TELEGRAM_E2E_ALLOWED_DB_PREFIX": str(tmp_path),
     }
+
+
+def make_config(tmp_path: Path, settings_path: Path, db_path: Path, *, dry_run: bool = False):
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "true" if dry_run else "false"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    return smoke.E2EConfig.from_env(env)
+
+
+def create_user_db(db_path: Path, user_id: int = 42) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE users "
+            "(user_id INTEGER PRIMARY KEY, balance TEXT, safe_balance TEXT, bid TEXT)"
+        )
+        conn.execute("CREATE TABLE event_history (user_id INTEGER, event_type TEXT)")
+        conn.execute(
+            "INSERT INTO users (user_id, balance, safe_balance, bid) VALUES (?,?,?,?)",
+            (user_id, "50", "0", "1"),
+        )
 
 
 def test_env_parsing_normalizes_username_and_redacts_token(tmp_path: Path) -> None:
@@ -175,3 +231,69 @@ def test_report_does_not_include_token(tmp_path: Path) -> None:
 
     assert token not in serialized
     assert "<redacted>" in serialized
+
+
+@pytest.mark.asyncio
+async def test_dice_step_uses_db_fallback_when_reply_is_not_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_user_db(db_path)
+    config = make_config(tmp_path, settings_path, db_path)
+    preflight = smoke.PreflightResult(
+        target_chat_id=-1001,
+        tester_bot_id=42,
+        tester_username="TesterBot",
+        stage_bot_id=777,
+        stage_bot_username="Left4CasinoStageBot",
+        chat_title="Stage chat",
+    )
+    monkeypatch.setattr(
+        smoke,
+        "build_smoke_steps",
+        lambda _username: [smoke.ScenarioStep("slots", "dice", emoji="🎰")],
+    )
+
+    results = await smoke.run_scenario(config, FakeNoReplyBot(db_path), preflight)
+
+    assert results == [
+        {
+            "name": "slots",
+            "action": "dice",
+            "sent_message_id": 11,
+            "reply_count": 0,
+            "reply_texts": [],
+            "db_validated": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_message_step_still_requires_visible_reply_even_if_db_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_user_db(db_path)
+    config = make_config(tmp_path, settings_path, db_path)
+    preflight = smoke.PreflightResult(
+        target_chat_id=-1001,
+        tester_bot_id=42,
+        tester_username="TesterBot",
+        stage_bot_id=777,
+        stage_bot_username="Left4CasinoStageBot",
+        chat_title="Stage chat",
+    )
+    monkeypatch.setattr(
+        smoke,
+        "build_smoke_steps",
+        lambda _username: [
+            smoke.ScenarioStep("balance", "message", "/balance@Left4CasinoStageBot")
+        ],
+    )
+
+    with pytest.raises(smoke.SmokeFailureError, match="timeout waiting for stage bot reply"):
+        await smoke.run_scenario(config, FakeNoReplyBot(db_path), preflight)
