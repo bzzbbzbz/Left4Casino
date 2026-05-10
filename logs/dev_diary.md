@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-05-10: TASK-019 E2E staging feedback coverage
+
+**Decision**: Расширен `telegram_e2e_smoke.py` сценариями `stage-parity`, `economy` и `schedule-readiness`, опциональной проверкой меню stage-бота через `TELEGRAM_E2E_STAGE_BOT_TOKEN`, явным guard `TELEGRAM_E2E_ALLOW_DB_MUTATION=1` для stage DB setup и циклом спинов до первого win с лимитом.
+
+**Reasoning**: Feedback требовал ловить старое fork-поведение `/start`, проверять Bot API command menu без раскрытия токенов, валидировать экономику по фактической stage DB и иметь read-only диагностику расписаний happy moment/heist без изменения production scheduler.
+
+**Result**: Добавлены unit-тесты fake API/DB для legacy `/start`, optional command menu, DB mutation guard, `/safe` deposit/withdraw, spin-until-win и schedule-readiness. Live Telegram по требованию не запускался.
+
+**References**: TASK-019, `scripts/telegram_e2e_smoke.py`, `tests/unit/test_telegram_e2e_smoke.py`.
+
+---
+
 ## 2026-05-10: TASK-019 Telegram bot-to-bot E2E smoke tester
 
 **Decision**: Добавлен opt-in smoke runner `scripts/telegram_e2e_smoke.py`, который берёт конфигурацию только из env, выполняет safety preflight для staging-чата/БД, отправляет базовый сценарий команд с явным `@stage_bot_username` и dice `🎰`, фильтрует ответы только от stage-бота, дедуплицирует updates и поддерживает timeout/rate-limit/max-steps/dry-run.

@@ -25,6 +25,7 @@ from typing import Any, Protocol
 from bot.money import decode_money
 
 ENV_TESTER_TOKEN = "TELEGRAM_E2E_TESTER_TOKEN"
+ENV_STAGE_BOT_TOKEN = "TELEGRAM_E2E_STAGE_BOT_TOKEN"
 ENV_STAGE_BOT_USERNAME = "TELEGRAM_E2E_STAGE_BOT_USERNAME"
 ENV_STAGE_SETTINGS_PATH = "TELEGRAM_E2E_STAGE_SETTINGS_PATH"
 ENV_STAGE_DB_PATH = "TELEGRAM_E2E_STAGE_DB_PATH"
@@ -34,6 +35,9 @@ ENV_RATE_LIMIT = "TELEGRAM_E2E_RATE_LIMIT_SECONDS"
 ENV_MAX_STEPS = "TELEGRAM_E2E_MAX_STEPS"
 ENV_DRY_RUN = "TELEGRAM_E2E_DRY_RUN"
 ENV_ALLOWED_DB_PREFIX = "TELEGRAM_E2E_ALLOWED_DB_PREFIX"
+ENV_SCENARIO = "TELEGRAM_E2E_SCENARIO"
+ENV_ALLOW_DB_MUTATION = "TELEGRAM_E2E_ALLOW_DB_MUTATION"
+ENV_MAX_SPINS_UNTIL_WIN = "TELEGRAM_E2E_MAX_SPINS_UNTIL_WIN"
 
 DEFAULT_STAGE_PREFIX = "/opt/left4casino/python-runner-stage"
 DEFAULT_PROD_DB_PATHS = {
@@ -53,6 +57,7 @@ class SmokeFailureError(AssertionError):
 @dataclass(frozen=True)
 class E2EConfig:
     tester_token: str
+    stage_bot_token: str | None
     stage_bot_username: str
     stage_settings_path: Path
     stage_db_path: Path
@@ -62,11 +67,15 @@ class E2EConfig:
     max_steps: int = 30
     dry_run: bool = False
     allowed_db_prefix: Path = Path(DEFAULT_STAGE_PREFIX)
+    scenario: str = "smoke"
+    allow_db_mutation: bool = False
+    max_spins_until_win: int = 20
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> E2EConfig:
         env = dict(os.environ if env is None else env)
         token = _required(env, ENV_TESTER_TOKEN)
+        stage_token = _optional_secret(env.get(ENV_STAGE_BOT_TOKEN))
         username = _normalize_username(_required(env, ENV_STAGE_BOT_USERNAME))
         settings_path = Path(_required(env, ENV_STAGE_SETTINGS_PATH)).expanduser()
         db_path = Path(_required(env, ENV_STAGE_DB_PATH)).expanduser()
@@ -76,14 +85,22 @@ class E2EConfig:
         max_steps = _optional_int(env.get(ENV_MAX_STEPS), ENV_MAX_STEPS) or 30
         dry_run = _parse_bool(env.get(ENV_DRY_RUN, "false"))
         allowed_prefix = Path(env.get(ENV_ALLOWED_DB_PREFIX, DEFAULT_STAGE_PREFIX)).expanduser()
+        scenario = env.get(ENV_SCENARIO, "smoke").strip() or "smoke"
+        allow_db_mutation = _parse_bool(env.get(ENV_ALLOW_DB_MUTATION, "false"))
+        max_spins = _optional_int(env.get(ENV_MAX_SPINS_UNTIL_WIN), ENV_MAX_SPINS_UNTIL_WIN) or 20
         if timeout <= 0:
             raise ConfigError(f"{ENV_TIMEOUT} must be > 0")
         if rate_limit < 0:
             raise ConfigError(f"{ENV_RATE_LIMIT} must be >= 0")
         if max_steps <= 0:
             raise ConfigError(f"{ENV_MAX_STEPS} must be > 0")
+        if max_spins <= 0:
+            raise ConfigError(f"{ENV_MAX_SPINS_UNTIL_WIN} must be > 0")
+        if scenario not in {"smoke", "stage-parity", "economy", "schedule-readiness"}:
+            raise ConfigError(f"unsupported scenario: {scenario}")
         return cls(
             tester_token=token,
+            stage_bot_token=stage_token,
             stage_bot_username=username,
             stage_settings_path=settings_path,
             stage_db_path=db_path,
@@ -93,11 +110,15 @@ class E2EConfig:
             max_steps=max_steps,
             dry_run=dry_run,
             allowed_db_prefix=allowed_prefix,
+            scenario=scenario,
+            allow_db_mutation=allow_db_mutation,
+            max_spins_until_win=max_spins,
         )
 
     def redacted(self) -> dict[str, Any]:
         data = asdict(self)
         data["tester_token"] = "<redacted>"
+        data["stage_bot_token"] = "<redacted>" if self.stage_bot_token else None
         data["stage_settings_path"] = str(self.stage_settings_path)
         data["stage_db_path"] = str(self.stage_db_path)
         data["allowed_db_prefix"] = str(self.allowed_db_prefix)
@@ -126,6 +147,7 @@ class ScenarioStep:
     action: str
     text: str | None = None
     emoji: str | None = None
+    setup_balance: int | None = None
 
 
 @dataclass
@@ -135,6 +157,8 @@ class SmokeReport:
     preflight: dict[str, Any] | None = None
     steps: list[dict[str, Any]] = field(default_factory=list)
     db_assertions: dict[str, Any] | None = None
+    command_menu: dict[str, Any] | None = None
+    schedule_readiness: dict[str, Any] | None = None
     errors: list[str] = field(default_factory=list)
 
     def to_json(self) -> str:
@@ -151,6 +175,8 @@ class BotApiProtocol(Protocol):
     async def send_message(self, chat_id: int, text: str) -> dict[str, Any]: ...
 
     async def send_dice(self, chat_id: int, emoji: str) -> dict[str, Any]: ...
+
+    async def get_my_commands(self) -> list[dict[str, Any]]: ...
 
     async def get_updates(
         self, offset: int | None = None, timeout: int = 0, allowed_updates: list[str] | None = None
@@ -187,6 +213,12 @@ class TelegramBotApi:
 
     async def send_dice(self, chat_id: int, emoji: str) -> dict[str, Any]:
         return await self._call("sendDice", {"chat_id": chat_id, "emoji": emoji})
+
+    async def get_my_commands(self) -> list[dict[str, Any]]:
+        result = await self._call("getMyCommands")
+        if not isinstance(result, list):
+            raise SmokeFailureError("Bot API getMyCommands returned non-list result")
+        return result
 
     async def get_updates(
         self, offset: int | None = None, timeout: int = 0, allowed_updates: list[str] | None = None
@@ -333,10 +365,51 @@ def build_smoke_steps(stage_bot_username: str) -> list[ScenarioStep]:
     ]
 
 
+def build_stage_parity_steps(stage_bot_username: str) -> list[ScenarioStep]:
+    suffix = f"@{_normalize_username(stage_bot_username)}"
+    return [
+        ScenarioStep("start-no-legacy", "message_optional_reply", f"/start{suffix}"),
+        ScenarioStep("balance", "message", f"/balance{suffix}"),
+    ]
+
+
+def build_economy_steps(stage_bot_username: str, *, include_spin_loop: bool) -> list[ScenarioStep]:
+    suffix = f"@{_normalize_username(stage_bot_username)}"
+    steps = [
+        ScenarioStep("setup-positive-balance", "db_set_balance", setup_balance=50),
+        ScenarioStep("bid-all-in", "message", f"/bid{suffix} 999999"),
+        ScenarioStep("setup-safe-balance", "db_set_balance", setup_balance=50),
+        ScenarioStep("safe-deposit", "message", f"/safe{suffix} 1"),
+        ScenarioStep("safe-withdraw", "message", f"/safe{suffix} -1"),
+        ScenarioStep("setup-zero-balance", "db_set_balance", setup_balance=0),
+        ScenarioStep("credit-entry", "message", f"/credit{suffix}"),
+    ]
+    if include_spin_loop:
+        steps.extend(
+            [
+                ScenarioStep("setup-spin-balance", "db_set_balance", setup_balance=50),
+                ScenarioStep("spin-until-win", "spin_until_win", emoji="🎰"),
+            ]
+        )
+    return steps
+
+
+def build_scenario_steps(config: E2EConfig) -> list[ScenarioStep]:
+    if config.scenario == "stage-parity":
+        return build_stage_parity_steps(config.stage_bot_username)
+    if config.scenario == "economy":
+        return build_economy_steps(
+            config.stage_bot_username, include_spin_loop=config.max_spins_until_win > 0
+        )
+    if config.scenario == "schedule-readiness":
+        return []
+    return build_smoke_steps(config.stage_bot_username)
+
+
 async def run_scenario(
     config: E2EConfig, api: BotApiProtocol, preflight: PreflightResult
 ) -> list[dict[str, Any]]:
-    steps = build_smoke_steps(config.stage_bot_username)
+    steps = build_scenario_steps(config)
     if len(steps) > config.max_steps:
         raise ConfigError("scenario step count exceeds configured max steps")
     reply_filter = StageReplyFilter(
@@ -350,13 +423,43 @@ async def run_scenario(
         sent: dict[str, Any] | None = None
         dice_before: dict[str, Any] | None = None
         db_validated = False
+        db_assertion: dict[str, Any] | None = None
         if config.dry_run:
             sent = {"dry_run": True, "text": step.text, "emoji": step.emoji}
             replies: list[dict[str, Any]] = []
         else:
+            if step.action == "db_set_balance":
+                if step.setup_balance is None:
+                    raise SmokeFailureError(f"missing setup balance for step {step.name}")
+                set_tester_balance_for_stage(config, preflight.tester_bot_id, step.setup_balance)
+                db_assertion = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
+                replies = []
+                sent = {"db_mutation": "set_balance"}
+                db_validated = True
+                results.append(
+                    {
+                        "name": step.name,
+                        "action": step.action,
+                        "sent_message_id": None,
+                        "reply_count": 0,
+                        "reply_texts": [],
+                        "db_validated": db_validated,
+                        "db_assertion": db_assertion,
+                    }
+                )
+                continue
             if step.action == "dice":
                 dice_before = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
+            if step.action == "spin_until_win":
+                result = await run_spin_until_win(
+                    config, api, preflight, reply_filter, update_offset
+                )
+                update_offset = result.pop("update_offset", update_offset)
+                results.append(result)
+                continue
             if step.action == "message" and step.text is not None:
+                sent = await api.send_message(preflight.target_chat_id, step.text)
+            elif step.action == "message_optional_reply" and step.text is not None:
                 sent = await api.send_message(preflight.target_chat_id, step.text)
             elif step.action == "dice" and step.emoji is not None:
                 sent = await api.send_dice(preflight.target_chat_id, step.emoji)
@@ -369,15 +472,33 @@ async def run_scenario(
                 update_offset=update_offset,
                 timeout_seconds=config.timeout_seconds,
             )
+            if step.name == "start-no-legacy":
+                assert_no_legacy_start_reply(replies)
             if not replies:
+                if step.action == "message_optional_reply":
+                    db_validated = False
                 if step.action == "dice" and dice_step_db_changed(
                     config.stage_db_path, preflight.tester_bot_id, dice_before
                 ):
                     db_validated = True
-                else:
+                elif step.action != "message_optional_reply":
                     raise SmokeFailureError(
                         f"timeout waiting for stage bot reply after step {step.name}"
                     )
+            if step.name == "bid-all-in":
+                db_assertion = assert_bid_all_in(config.stage_db_path, preflight.tester_bot_id)
+            elif step.name == "safe-deposit":
+                db_assertion = assert_safe_balance(
+                    config.stage_db_path, preflight.tester_bot_id, expected=1
+                )
+            elif step.name == "safe-withdraw":
+                db_assertion = assert_safe_balance(
+                    config.stage_db_path, preflight.tester_bot_id, expected=0
+                )
+            elif step.name == "credit-entry":
+                db_assertion = assert_credit_session_started(
+                    config.stage_db_path, preflight.tester_bot_id
+                )
         results.append(
             {
                 "name": step.name,
@@ -386,6 +507,7 @@ async def run_scenario(
                 "reply_count": len(replies),
                 "reply_texts": [_message_text(reply) for reply in replies],
                 "db_validated": db_validated,
+                "db_assertion": db_assertion,
             }
         )
     return results
@@ -475,10 +597,171 @@ def dice_step_db_changed(db_path: Path, tester_user_id: int, before: dict[str, A
     return after["event_count"] > before["event_count"] or after["balance"] != before["balance"]
 
 
-async def execute(config: E2EConfig, api: BotApiProtocol) -> SmokeReport:
+def assert_no_legacy_start_reply(replies: list[dict[str, Any]]) -> None:
+    legacy_fragments = (
+        "добро пожаловать в казино",
+        "добро пожаловать в left4casino",
+        "casino bot",
+        "крутите слоты",
+        "игровое меню",
+    )
+    for reply in replies:
+        text = _message_text(reply).lower()
+        if any(fragment in text for fragment in legacy_fragments):
+            raise SmokeFailureError("/start exposed legacy casino welcome text")
+        if "reply_markup" in reply:
+            raise SmokeFailureError("/start exposed legacy reply keyboard markup")
+
+
+def set_tester_balance_for_stage(config: E2EConfig, tester_user_id: int, balance: int) -> None:
+    if not config.allow_db_mutation:
+        raise ConfigError(f"{ENV_ALLOW_DB_MUTATION}=1 is required for DB mutation steps")
+    validate_stage_db_path(config.stage_db_path, config.allowed_db_prefix)
+    with sqlite3.connect(config.stage_db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO users (user_id, balance, safe_balance, bid)
+            VALUES (?, ?, COALESCE((SELECT safe_balance FROM users WHERE user_id = ?), '0'), '1')
+            ON CONFLICT(user_id) DO UPDATE SET balance = excluded.balance, bid = '1'
+            """,
+            (tester_user_id, str(balance), tester_user_id),
+        )
+
+
+def assert_bid_all_in(db_path: Path, tester_user_id: int) -> dict[str, Any]:
+    state = snapshot_user_state(db_path, tester_user_id)
+    if state is None:
+        raise SmokeFailureError("tester user missing after /bid all-in scenario")
+    if state["bid"] != state["balance"]:
+        raise SmokeFailureError("/bid above balance did not become all-in")
+    return {"bid": state["bid"], "balance": state["balance"]}
+
+
+def assert_safe_balance(db_path: Path, tester_user_id: int, *, expected: int) -> dict[str, Any]:
+    state = snapshot_user_state(db_path, tester_user_id)
+    if state is None:
+        raise SmokeFailureError("tester user missing after /safe scenario")
+    if state["safe_balance"] != expected:
+        raise SmokeFailureError(f"expected safe_balance={expected}, got {state['safe_balance']}")
+    return {"safe_balance": state["safe_balance"], "balance": state["balance"]}
+
+
+def assert_credit_session_started(db_path: Path, tester_user_id: int) -> dict[str, Any]:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM ai_credit_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (tester_user_id,),
+        ).fetchone()
+    if row is None:
+        raise SmokeFailureError("/credit did not create an AI credit session")
+    return {"credit_session_status": row[0]}
+
+
+def count_user_events(db_path: Path, tester_user_id: int, event_type: str) -> int:
+    if not db_path.exists():
+        return 0
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM event_history WHERE user_id = ? AND event_type = ?",
+            (tester_user_id, event_type),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+async def run_spin_until_win(
+    config: E2EConfig,
+    api: BotApiProtocol,
+    preflight: PreflightResult,
+    reply_filter: StageReplyFilter,
+    update_offset: int | None,
+) -> dict[str, Any]:
+    before = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
+    wins_before = count_user_events(config.stage_db_path, preflight.tester_bot_id, "win")
+    current_offset = update_offset
+    reply_texts: list[str] = []
+    sent_ids: list[int] = []
+    for spin in range(1, config.max_spins_until_win + 1):
+        sent = await api.send_dice(preflight.target_chat_id, "🎰")
+        if isinstance(sent.get("message_id"), int):
+            sent_ids.append(sent["message_id"])
+        await asyncio.sleep(config.rate_limit_seconds)
+        replies, current_offset = await poll_stage_replies(
+            api=api,
+            reply_filter=reply_filter,
+            update_offset=current_offset,
+            timeout_seconds=config.timeout_seconds,
+        )
+        reply_texts.extend(_message_text(reply) for reply in replies)
+        after = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
+        if after is None:
+            continue
+        wins_after = count_user_events(config.stage_db_path, preflight.tester_bot_id, "win")
+        if wins_after > wins_before or (
+            before is not None and after["balance"] > before["balance"]
+        ):
+            return {
+                "name": "spin-until-win",
+                "action": "spin_until_win",
+                "sent_message_id": sent_ids[-1] if sent_ids else None,
+                "reply_count": len(reply_texts),
+                "reply_texts": reply_texts,
+                "db_validated": True,
+                "db_assertion": {
+                    "spins": spin,
+                    "wins_before": wins_before,
+                    "wins_after": wins_after,
+                },
+                "update_offset": current_offset,
+            }
+    raise SmokeFailureError(f"no slot win after {config.max_spins_until_win} spins")
+
+
+def read_schedule_readiness(db_path: Path) -> dict[str, Any]:
+    if not db_path.exists():
+        return {"scheduled_events_present": False, "rows": []}
+    with sqlite3.connect(db_path) as conn:
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_events'"
+        ).fetchone()
+        if table is None:
+            return {"scheduled_events_present": False, "rows": []}
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT event_id, event_type, chat_id, scheduled_at, timezone, source_date, status, metadata
+            FROM scheduled_events
+            WHERE event_type IN ('happy_moment_start', 'happy_moment_end', 'heist_warning', 'heist_start', 'heist_end')
+            ORDER BY scheduled_at DESC
+            LIMIT 20
+            """
+        ).fetchall()
+    return {"scheduled_events_present": True, "rows": [dict(row) for row in rows]}
+
+
+async def validate_stage_command_menu(stage_api: BotApiProtocol | None) -> dict[str, Any]:
+    if stage_api is None:
+        return {"skipped": f"{ENV_STAGE_BOT_TOKEN} not set"}
+    commands = await stage_api.get_my_commands()
+    names = [str(command.get("command", "")) for command in commands]
+    required = {"balance", "bid", "safe", "top", "stats", "credit"}
+    missing = sorted(required.difference(names))
+    if missing:
+        raise SmokeFailureError(f"stage command menu missing commands: {', '.join(missing)}")
+    return {"commands": names, "missing": []}
+
+
+async def execute(
+    config: E2EConfig, api: BotApiProtocol, stage_api: BotApiProtocol | None = None
+) -> SmokeReport:
     report = SmokeReport(ok=False, config=config.redacted())
     preflight = await run_preflight(config, api)
     report.preflight = asdict(preflight)
+    report.command_menu = await validate_stage_command_menu(stage_api)
+    if config.scenario == "schedule-readiness":
+        report.schedule_readiness = read_schedule_readiness(config.stage_db_path)
+        report.db_assertions = {"skipped": "schedule-readiness is read-only"}
+        report.ok = True
+        return report
     before = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
     report.steps = await run_scenario(config, api, preflight)
     if config.dry_run:
@@ -495,6 +778,12 @@ def _required(env: dict[str, str], name: str) -> str:
     value = env.get(name)
     if value is None or value.strip() == "":
         raise ConfigError(f"missing required env var {name}")
+    return value.strip()
+
+
+def _optional_secret(value: str | None) -> str | None:
+    if value is None or value.strip() == "":
+        return None
     return value.strip()
 
 
@@ -562,6 +851,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help=f"Override {ENV_DRY_RUN}=true; preflight only, no scenario messages",
     )
+    parser.add_argument(
+        "--scenario",
+        choices=["smoke", "stage-parity", "economy", "schedule-readiness"],
+        help=f"Override {ENV_SCENARIO}",
+    )
     return parser.parse_args(argv)
 
 
@@ -570,9 +864,12 @@ async def async_main(argv: list[str]) -> int:
     env = dict(os.environ)
     if args.dry_run:
         env[ENV_DRY_RUN] = "true"
+    if args.scenario:
+        env[ENV_SCENARIO] = args.scenario
     try:
         config = E2EConfig.from_env(env)
-        report = await execute(config, TelegramBotApi(config.tester_token))
+        stage_api = TelegramBotApi(config.stage_bot_token) if config.stage_bot_token else None
+        report = await execute(config, TelegramBotApi(config.tester_token), stage_api)
     except (ConfigError, SmokeFailureError) as exc:
         safe_config: dict[str, Any] = {"error": "configuration not loaded"}
         try:

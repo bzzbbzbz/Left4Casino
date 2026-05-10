@@ -45,6 +45,9 @@ class FakeNoReplyBot:
     async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
         return {"message_id": 10, "chat": {"id": chat_id}, "text": text}
 
+    async def get_my_commands(self) -> list[dict[str, Any]]:
+        return []
+
     async def send_dice(self, chat_id: int, emoji: str) -> dict[str, Any]:
         if self.db_path is not None:
             with sqlite3.connect(self.db_path) as conn:
@@ -59,6 +62,89 @@ class FakeNoReplyBot:
         self, offset: int | None = None, timeout: int = 0, allowed_updates: list[str] | None = None
     ) -> list[dict[str, Any]]:
         return []
+
+
+class FakeReplyEconomyBot(FakeNoReplyBot):
+    def __init__(self, db_path: Path, user_id: int = 42) -> None:
+        super().__init__(db_path, user_id)
+        self.update_id = 0
+        self.replies: list[dict[str, Any]] = []
+        self.sent_count = 0
+
+    async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+        self.sent_count += 1
+        if self.db_path is not None:
+            with sqlite3.connect(self.db_path) as conn:
+                if text.startswith("/bid"):
+                    row = conn.execute(
+                        "SELECT balance FROM users WHERE user_id = ?", (self.user_id,)
+                    ).fetchone()
+                    balance = row[0] if row else "0"
+                    conn.execute(
+                        "UPDATE users SET bid = ? WHERE user_id = ?", (balance, self.user_id)
+                    )
+                elif text.startswith("/safe") and " -1" not in text:
+                    conn.execute(
+                        "UPDATE users SET balance = '49', safe_balance = '1' WHERE user_id = ?",
+                        (self.user_id,),
+                    )
+                elif text.startswith("/safe") and " -1" in text:
+                    conn.execute(
+                        "UPDATE users SET balance = '50', safe_balance = '0' WHERE user_id = ?",
+                        (self.user_id,),
+                    )
+                elif text.startswith("/credit"):
+                    conn.execute(
+                        "INSERT INTO ai_credit_sessions (session_id, user_id, status) VALUES (?,?,?)",
+                        ("s1", self.user_id, "active"),
+                    )
+        self._queue_reply(chat_id, "ok")
+        return {"message_id": self.sent_count, "chat": {"id": chat_id}, "text": text}
+
+    async def send_dice(self, chat_id: int, emoji: str) -> dict[str, Any]:
+        self.sent_count += 1
+        if self.db_path is not None:
+            with sqlite3.connect(self.db_path) as conn:
+                if self.sent_count >= 2:
+                    conn.execute(
+                        "UPDATE users SET balance = '57' WHERE user_id = ?", (self.user_id,)
+                    )
+                    conn.execute(
+                        "INSERT INTO event_history (user_id, event_type) VALUES (?,?)",
+                        (self.user_id, "win"),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO event_history (user_id, event_type) VALUES (?,?)",
+                        (self.user_id, "loss"),
+                    )
+        self._queue_reply(chat_id, "spin")
+        return {
+            "message_id": self.sent_count,
+            "chat": {"id": chat_id},
+            "dice": {"emoji": emoji, "value": 64},
+        }
+
+    async def get_updates(
+        self, offset: int | None = None, timeout: int = 0, allowed_updates: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        updates = self.replies
+        self.replies = []
+        return updates
+
+    def _queue_reply(self, chat_id: int, text: str) -> None:
+        self.update_id += 1
+        self.replies.append(
+            {
+                "update_id": self.update_id,
+                "message": {
+                    "message_id": self.update_id,
+                    "chat": {"id": chat_id},
+                    "from": {"id": 777, "username": "Left4CasinoStageBot"},
+                    "text": text,
+                },
+            }
+        )
 
 
 def write_stage_settings(path: Path, allowed_chat_ids: list[int]) -> None:
@@ -100,6 +186,10 @@ def create_user_db(db_path: Path, user_id: int = 42) -> None:
             "(user_id INTEGER PRIMARY KEY, balance TEXT, safe_balance TEXT, bid TEXT)"
         )
         conn.execute("CREATE TABLE event_history (user_id INTEGER, event_type TEXT)")
+        conn.execute(
+            "CREATE TABLE ai_credit_sessions "
+            "(session_id TEXT, user_id INTEGER, status TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+        )
         conn.execute(
             "INSERT INTO users (user_id, balance, safe_balance, bid) VALUES (?,?,?,?)",
             (user_id, "50", "0", "1"),
@@ -233,6 +323,67 @@ def test_report_does_not_include_token(tmp_path: Path) -> None:
     assert "<redacted>" in serialized
 
 
+def test_stage_token_is_optional_and_redacted(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_STAGE_BOT_TOKEN"] = "stage-secret"
+
+    config = smoke.E2EConfig.from_env(env)
+
+    assert config.stage_bot_token == "stage-secret"
+    assert config.redacted()["stage_bot_token"] == "<redacted>"
+
+
+def test_legacy_start_detection_rejects_text_and_reply_markup() -> None:
+    with pytest.raises(smoke.SmokeFailureError, match="legacy casino welcome"):
+        smoke.assert_no_legacy_start_reply([{"text": "Добро пожаловать в казино!"}])
+
+    with pytest.raises(smoke.SmokeFailureError, match="reply keyboard"):
+        smoke.assert_no_legacy_start_reply([{"text": "ok", "reply_markup": {"keyboard": []}}])
+
+    smoke.assert_no_legacy_start_reply([])
+
+
+@pytest.mark.asyncio
+async def test_command_menu_validation_uses_optional_stage_token_api() -> None:
+    class FakeStageApi(FakeNoReplyBot):
+        async def get_my_commands(self) -> list[dict[str, Any]]:
+            return [
+                {"command": "balance"},
+                {"command": "bid"},
+                {"command": "safe"},
+                {"command": "top"},
+                {"command": "stats"},
+                {"command": "credit"},
+            ]
+
+    result = await smoke.validate_stage_command_menu(FakeStageApi())
+
+    assert result["missing"] == []
+    assert await smoke.validate_stage_command_menu(None) == {
+        "skipped": "TELEGRAM_E2E_STAGE_BOT_TOKEN not set"
+    }
+
+
+def test_db_mutation_guard_requires_explicit_env(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_user_db(db_path)
+    config = make_config(tmp_path, settings_path, db_path)
+
+    with pytest.raises(smoke.ConfigError, match="ALLOW_DB_MUTATION"):
+        smoke.set_tester_balance_for_stage(config, 42, 0)
+
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_ALLOW_DB_MUTATION"] = "1"
+    config = smoke.E2EConfig.from_env(env)
+    smoke.set_tester_balance_for_stage(config, 42, 0)
+
+    assert smoke.snapshot_user_state(db_path, 42)["balance"] == 0  # type: ignore[index]
+
+
 @pytest.mark.asyncio
 async def test_dice_step_uses_db_fallback_when_reply_is_not_visible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -266,6 +417,7 @@ async def test_dice_step_uses_db_fallback_when_reply_is_not_visible(
             "reply_count": 0,
             "reply_texts": [],
             "db_validated": True,
+            "db_assertion": None,
         }
     ]
 
@@ -297,3 +449,88 @@ async def test_message_step_still_requires_visible_reply_even_if_db_changes(
 
     with pytest.raises(smoke.SmokeFailureError, match="timeout waiting for stage bot reply"):
         await smoke.run_scenario(config, FakeNoReplyBot(db_path), preflight)
+
+
+@pytest.mark.asyncio
+async def test_economy_safe_deposit_withdraw_steps_with_db_guard(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_user_db(db_path)
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_ALLOW_DB_MUTATION"] = "1"
+    env["TELEGRAM_E2E_SCENARIO"] = "economy"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    env["TELEGRAM_E2E_MAX_SPINS_UNTIL_WIN"] = "1"
+    config = smoke.E2EConfig.from_env(env)
+    preflight = smoke.PreflightResult(
+        -1001, 42, "TesterBot", 777, "Left4CasinoStageBot", "Stage chat"
+    )
+
+    results = await smoke.run_scenario(config, FakeReplyEconomyBot(db_path), preflight)
+
+    by_name = {result["name"]: result for result in results}
+    assert by_name["bid-all-in"]["db_assertion"] == {"bid": 50, "balance": 50}
+    assert by_name["safe-deposit"]["db_assertion"]["safe_balance"] == 1
+    assert by_name["safe-withdraw"]["db_assertion"]["safe_balance"] == 0
+    assert by_name["credit-entry"]["db_assertion"] == {"credit_session_status": "active"}
+
+
+@pytest.mark.asyncio
+async def test_spin_until_win_loop_stops_on_first_win(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    create_user_db(db_path)
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    env["TELEGRAM_E2E_MAX_SPINS_UNTIL_WIN"] = "3"
+    config = smoke.E2EConfig.from_env(env)
+    preflight = smoke.PreflightResult(
+        -1001, 42, "TesterBot", 777, "Left4CasinoStageBot", "Stage chat"
+    )
+
+    result = await smoke.run_spin_until_win(
+        config,
+        FakeReplyEconomyBot(db_path),
+        preflight,
+        smoke.StageReplyFilter(stage_bot_username="Left4CasinoStageBot", stage_bot_id=777),
+        None,
+    )
+
+    assert result["db_validated"] is True
+    assert result["db_assertion"]["spins"] == 2
+
+
+def test_schedule_readiness_reports_rows_read_only(tmp_path: Path) -> None:
+    db_path = tmp_path / "casino.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE scheduled_events "
+            "(event_id TEXT, event_type TEXT, chat_id INTEGER, scheduled_at TEXT, timezone TEXT, "
+            "source_date TEXT, status TEXT, metadata TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO scheduled_events VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "e1",
+                "happy_moment_start",
+                -1001,
+                "2026-05-10T10:00:00",
+                "UTC",
+                "2026-05-10",
+                "scheduled",
+                "{}",
+            ),
+        )
+
+    report = smoke.read_schedule_readiness(db_path)
+
+    assert report["scheduled_events_present"] is True
+    assert report["rows"][0]["event_type"] == "happy_moment_start"

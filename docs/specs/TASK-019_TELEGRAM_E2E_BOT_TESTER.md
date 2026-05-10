@@ -157,6 +157,29 @@ Bot API не позволяет обычному боту нажимать inlin
 python scripts/telegram_e2e_smoke.py --scenario smoke --env stage
 ```
 
+Additional opt-in scenarios added after staging feedback:
+
+```bash
+# Strict parity: /start must not expose old fork casino welcome text or reply keyboard.
+TELEGRAM_E2E_SCENARIO=stage-parity python scripts/telegram_e2e_smoke.py
+
+# Economy checks: /bid all-in, /safe deposit/withdraw, /credit entry, spin-until-win.
+# DB mutation is explicit and still constrained by the stage DB prefix guard.
+TELEGRAM_E2E_SCENARIO=economy \
+TELEGRAM_E2E_ALLOW_DB_MUTATION=1 \
+TELEGRAM_E2E_MAX_SPINS_UNTIL_WIN=20 \
+python scripts/telegram_e2e_smoke.py
+
+# Read-only scheduler readiness report for happy moment/heist scheduled_events rows.
+TELEGRAM_E2E_SCENARIO=schedule-readiness python scripts/telegram_e2e_smoke.py
+```
+
+`TELEGRAM_E2E_STAGE_BOT_TOKEN` is optional and never logged; when present it is used only
+to call `getMyCommands` for the stage bot command-menu validation. The tester token cannot
+query another bot's command menu, so this check is skipped unless the stage token is supplied.
+The runner does not force happy moment/heist schedules automatically; forcing schedules requires
+stage runtime config/restart outside this script.
+
 Ожидаемый результат:
 - сценарий завершается успешно;
 - stage-бот отвечает в staging-чате;
