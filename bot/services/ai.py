@@ -14,16 +14,31 @@ logger = logging.getLogger(__name__)
 class AIClient:
     def __init__(self, config):
         self.config = config
+        self.provider = config.provider.lower().strip()
+        self.client = None
+
+        if self.provider == "mock":
+            self.model_name = config.model
+            return
 
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        api_key = openrouter_key or config.api_key
+        openai_key = os.getenv("OPENAI_API_KEY")
+        api_key = config.api_key
         base_url = None
         self.model_name = config.model
 
-        if openrouter_key:
+        if self.provider == "openrouter":
+            api_key = openrouter_key or config.api_key
             base_url = "https://openrouter.ai/api/v1"
             if "/" not in self.model_name:
                 self.model_name = f"openai/{self.model_name}"
+        elif self.provider == "openai":
+            api_key = openai_key or config.api_key
+        else:
+            raise ValueError(f"Unsupported AI provider: {config.provider}")
+
+        if not api_key or api_key == "dummy":
+            raise ValueError(f"AI provider '{self.provider}' requires a real API key")
 
         if base_url:
             self.client = AsyncOpenAI(
@@ -34,6 +49,9 @@ class AIClient:
             self.client = AsyncOpenAI(api_key=api_key)
 
     async def generate_initial_greeting(self) -> str:
+        if self.provider == "mock":
+            return "Эй, ты! Хочешь денег? Удиви меня!"
+
         try:
             tasks = [
                 "рассказать анекдот",
@@ -88,6 +106,9 @@ class AIClient:
                 "Твой ответ (только текст требования):"
             )
 
+            if self.client is None:
+                raise RuntimeError("AI client is not initialized")
+
             response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[{"role": "system", "content": prompt}],
@@ -133,6 +154,17 @@ class AIClient:
         """
         Processes the user's answer and returns a reward based on strict evaluation.
         """
+        if self.provider == "mock":
+            return {
+                "content": "Ладно, держи немного фишек и не позорься.",
+                "completion_data": {
+                    "done": True,
+                    "score": 10,
+                    "reward": 15,
+                    "comment": "mock",
+                },
+            }
+
         try:
             # Extract user's last message
             user_message = "..."
@@ -191,6 +223,9 @@ class AIClient:
             )
 
             messages = [{"role": "system", "content": system_prompt}]
+
+            if self.client is None:
+                raise RuntimeError("AI client is not initialized")
 
             response = await self.client.chat.completions.create(
                 model=self.model_name, messages=messages, temperature=0.4

@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-05-10: TASK-022 `/credit` LLM fallback fix
+
+**Decision**: `AIClient` теперь явно маршрутизирует провайдеры: `mock` не создаёт LLM-клиент и возвращает локальный fallback, `openrouter` всегда использует OpenRouter endpoint с ключом из env или config, а `openai` использует OpenAI endpoint/key.
+
+**Reasoning**: Баг проявлялся как fallback greeting в `/credit`, потому что OpenRouter config-key без `OPENROUTER_API_KEY` уходил на default OpenAI endpoint, ошибка API маскировалась локальным fallback и выглядела как успешный ответ банкира.
+
+**Result**: Добавлены unit-тесты на provider routing, mock/error fallback boundaries и handler-контракт `/credit`: при успешном AIClient greeting handler отправляет сгенерированный текст без замены fallback. Live LLM, production/stage runtime, secrets, `settings.toml`, env и БД не трогались.
+
+**References**: TASK-022, `docs/specs/archive/TASK-022_CREDIT_LLM_FALLBACK.md`, `bot/services/ai.py`, `tests/unit/test_ai_client.py`, `tests/unit/test_ai_credit_handler.py`.
+
+---
+
 ## 2026-05-10: TASK-021 Event E2E coverage and `/start` removal
 
 **Decision**: `/start` полностью удалён из router/locale контрактов, а для Happy Moment и Heist добавлены скрытые stage-only E2E hooks, включаемые только через `LEFT4CASINO_E2E_HOOKS_ENABLED` вместе с обязательным `LEFT4CASINO_E2E_HOOKS_ALLOWED_USER_ID`.

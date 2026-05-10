@@ -116,3 +116,9 @@ tasks:
     spec: docs/specs/archive/TASK-021_EVENT_E2E_NO_START.md
     assignee: cursor-agent
     priority: HIGH
+  - id: TASK-022
+    name: "Fix /credit LLM greeting fallback"
+    status: DONE
+    spec: docs/specs/archive/TASK-022_CREDIT_LLM_FALLBACK.md
+    assignee: cursor-agent
+    priority: HIGH
