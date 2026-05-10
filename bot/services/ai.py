@@ -50,6 +50,60 @@ class AIServiceError(RuntimeError):
     """Sanitized AI provider failure safe to surface to handlers/logs."""
 
 
+def _require_non_empty_str(data: dict, *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raise AIServiceError("AI response generation returned malformed schema")
+
+
+def _require_number(data: dict, key: str) -> int:
+    if key not in data:
+        raise AIServiceError("AI response generation returned malformed schema")
+    value = data[key]
+    if isinstance(value, bool):
+        raise AIServiceError("AI response generation returned malformed schema")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.lstrip("+-").isdigit():
+            return int(stripped)
+    raise AIServiceError("AI response generation returned malformed schema")
+
+
+def _normalize_completion_data(data: dict, text: str) -> dict:
+    completion_data = data.get("completion_data")
+    if not isinstance(completion_data, dict):
+        raise AIServiceError("AI response generation returned malformed schema")
+    done = completion_data.get("done")
+    if not isinstance(done, bool):
+        raise AIServiceError("AI response generation returned malformed schema")
+    score = _require_number(completion_data, "score")
+    reward = _require_number(completion_data, "reward")
+    comment = completion_data.get("comment")
+    if not isinstance(comment, str) or not comment.strip():
+        raise AIServiceError("AI response generation returned malformed schema")
+    return {"done": done, "score": score, "reward": reward, "comment": comment.strip()}
+
+
+def _parse_ai_response_payload(clean_content: str) -> tuple[str, dict]:
+    try:
+        data = json.loads(clean_content)
+    except json.JSONDecodeError as error:
+        raise AIServiceError("AI response generation returned invalid JSON") from error
+    if not isinstance(data, dict):
+        raise AIServiceError("AI response generation returned malformed schema")
+    text = _require_non_empty_str(data, "content", "text", "comment")
+    completion_data = _normalize_completion_data(data, text)
+    reward = max(1, min(100, int(completion_data["reward"])))
+    completion_data = {**completion_data, "reward": reward}
+    return text, completion_data
+
+
 class AIClient:
     def __init__(self, config):
         self.config = config
@@ -260,7 +314,7 @@ class AIClient:
                 "- Идеально оформленный длинный текст без души → 25 (AI-генерация)\n"
                 "- Короткий, но меткий ответ по теме → 60+ (ценить старания и находчивость)\n\n"
                 "КОММЕНТАРИИ: Краткие, соответствуют оценке - от критики до уважения.\n\n"
-                'Формат ответа строго JSON: { "reasoning": "Сначала анализ на игру слов/логику/AI, потом решение", "text": "Ответ пользователю", "reward": число }'
+                'Формат ответа строго JSON: { "content": "Ответ пользователю", "completion_data": { "done": true, "score": число, "reward": число, "comment": "краткий комментарий" } }'
             )
 
             messages = [{"role": "system", "content": system_prompt}]
@@ -295,22 +349,14 @@ class AIClient:
                 if start != -1 and end != -1:
                     clean_content = clean_content[start : end + 1]
 
-                data = json.loads(clean_content)
-                text = data.get("text", "Ладно, вот твои копейки.")
-                reward = int(data.get("reward", 15))
-            except Exception:
+                text, completion = _parse_ai_response_payload(clean_content)
+            except AIServiceError:
                 logger.warning("Failed to parse JSON from AI response")
-                raise AIServiceError("AI response generation returned invalid JSON") from None
-
-            # Ensure reward is within bounds
-            try:
-                reward = max(1, min(100, int(reward)))
-            except Exception:
-                reward = 15
+                raise
 
             return {
                 "content": text,
-                "completion_data": {"done": True, "score": 10, "reward": reward, "comment": text},
+                "completion_data": completion,
             }
 
         except Exception as e:

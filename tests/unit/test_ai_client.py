@@ -184,3 +184,80 @@ async def test_real_response_invalid_json_raises_without_fake_credit(monkeypatch
             await client.generate_response([{"role": "user", "content": "ответ"}])
 
     create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_real_response_valid_schema_returns_completion(monkeypatch) -> None:
+    """Valid real-provider JSON is normalized into handler response data."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    create = AsyncMock(
+        return_value=_chat_response(
+            '{"content":"Держи, заслужил",'
+            '"completion_data":{"done":true,"score":77,"reward":42,"comment":"годно"}}'
+        )
+    )
+    openai_cls = MagicMock(
+        return_value=SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+    )
+
+    with patch("bot.services.ai.AsyncOpenAI", openai_cls):
+        client = AIClient(
+            AIConfig(provider="openai", api_key="test-openai-key", model="gpt-4o-mini")
+        )
+        response = await client.generate_response([{"role": "user", "content": "ответ"}])
+
+    assert response == {
+        "content": "Держи, заслужил",
+        "completion_data": {"done": True, "score": 77, "reward": 42, "comment": "годно"},
+    }
+    create.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("payload", "case"),
+    [
+        (
+            '{"completion_data":{"done":true,"score":77,"reward":42,"comment":"ok"}}',
+            "missing content",
+        ),
+        (
+            '{"content":"ok","completion_data":{"done":true,"score":77,"comment":"ok"}}',
+            "missing reward",
+        ),
+        (
+            '{"content":"ok","completion_data":{"done":true,"score":77,"reward":"many","comment":"ok"}}',
+            "non-numeric reward",
+        ),
+        ('{"content":"ok","reward":42}', "missing completion_data"),
+        ('{"content":"ok","completion_data":"bad"}', "malformed completion_data"),
+        (
+            '{"content":"ok","completion_data":{"done":"yes","score":77,"reward":42,"comment":"ok"}}',
+            "bad done",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_real_response_malformed_schema_raises_without_fake_credit(
+    monkeypatch, payload: str, case: str
+) -> None:
+    """Malformed real-provider JSON must fail closed instead of defaulting fields."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    create = AsyncMock(return_value=_chat_response(payload))
+    openai_cls = MagicMock(
+        return_value=SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+    )
+
+    with patch("bot.services.ai.AsyncOpenAI", openai_cls):
+        client = AIClient(
+            AIConfig(provider="openai", api_key="test-openai-key", model="gpt-4o-mini")
+        )
+        with pytest.raises(AIServiceError, match="malformed schema"):
+            await client.generate_response([{"role": "user", "content": case}])
+
+    create.assert_awaited_once()
