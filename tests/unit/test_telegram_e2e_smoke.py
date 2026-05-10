@@ -483,7 +483,38 @@ def test_credit_assertion_supports_sessions_without_created_at(tmp_path: Path) -
     result = smoke.assert_credit_session_started(db_path, 42, before=before)
     assert result["after"]["latest_session_id"] == "fresh"
     assert result["after"]["latest_status"] == "active"
+    assert result["after"]["latest_active_session_id"] == "fresh"
     assert result["after"]["schema"]["order_columns"] == ["rowid"]
+
+
+def test_credit_assertion_uses_latest_active_session_over_finished_at(tmp_path: Path) -> None:
+    db_path = tmp_path / "casino.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE ai_credit_sessions "
+            "(session_id TEXT, user_id INTEGER, status TEXT, "
+            "created_at TEXT, finished_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO ai_credit_sessions "
+            "(session_id, user_id, status, created_at, finished_at) VALUES (?,?,?,?,?)",
+            ("old-terminated", 42, "terminated", "2099-01-01T00:00:00Z", "2099-01-01T00:00:00Z"),
+        )
+    before = smoke.snapshot_credit_sessions(db_path, 42)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO ai_credit_sessions "
+            "(session_id, user_id, status, created_at, finished_at) VALUES (?,?,?,?,?)",
+            ("fresh-active", 42, "active", "2026-01-01T00:01:00Z", None),
+        )
+
+    result = smoke.assert_credit_session_started(db_path, 42, before=before)
+
+    assert result["after"]["latest_session_id"] == "old-terminated"
+    assert result["after"]["latest_status"] == "terminated"
+    assert result["after"]["latest_active_session_id"] == "fresh-active"
+    assert result["after"]["latest_active_status"] == "active"
 
 
 @pytest.mark.asyncio

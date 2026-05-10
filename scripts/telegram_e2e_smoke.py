@@ -813,10 +813,28 @@ def snapshot_credit_sessions(db_path: Path, tester_user_id: int) -> dict[str, An
             """,
             (tester_user_id,),
         ).fetchone()
+        active_row = None
+        if status_column is not None:
+            active_order_parts = [
+                f"{column} DESC" for column in ("created_at", "updated_at") if column in columns
+            ]
+            active_order_parts.append("rowid DESC")
+            active_row = conn.execute(
+                f"""
+                SELECT {session_id_expr}, {status_expr}
+                FROM ai_credit_sessions
+                WHERE user_id = ? AND {status_column} IN ('active', 'processing')
+                ORDER BY {", ".join(active_order_parts)}
+                LIMIT 1
+                """,
+                (tester_user_id,),
+            ).fetchone()
     return {
         "count": int(count),
         "latest_session_id": row[0] if row else None,
         "latest_status": row[1] if row else None,
+        "latest_active_session_id": active_row[0] if active_row else None,
+        "latest_active_status": active_row[1] if active_row else None,
         "schema": {
             "session_id_column": "session_id"
             if "session_id" in columns
@@ -839,8 +857,8 @@ def assert_credit_session_started(
         raise SmokeFailureError("ai_credit_sessions schema missing required status column")
     created_new_session = (
         after["count"] > before["count"]
-        and after["latest_session_id"] != before["latest_session_id"]
-        and after["latest_status"] in accepted_statuses
+        and after["latest_active_session_id"] != before.get("latest_active_session_id")
+        and after["latest_active_status"] in accepted_statuses
     )
     if not created_new_session:
         raise SmokeFailureError("/credit did not create a fresh active AI credit session")
