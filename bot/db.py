@@ -337,17 +337,22 @@ class Database:
 
     async def update_balance(self, user_id: int, amount: int):
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT balance FROM users WHERE user_id = ?", (user_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-            current = decode_money(row[0]) if row else 0
-            await db.execute(
-                "UPDATE users SET balance = ? WHERE user_id = ?",
-                (encode_money(current + amount), user_id),
-            )
-            await db.commit()
-            add_db_action(f"Updated balance for user {user_id} by {amount}")
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT balance FROM users WHERE user_id = ?", (user_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                current = decode_money(row[0]) if row else 0
+                await db.execute(
+                    "UPDATE users SET balance = ? WHERE user_id = ?",
+                    (encode_money(current + amount), user_id),
+                )
+                await db.commit()
+                add_db_action(f"Updated balance for user {user_id} by {amount}")
+            except Exception:
+                await db.rollback()
+                raise
 
     async def set_balance(self, user_id: int, new_balance: int):
         async with aiosqlite.connect(self.db_path) as db:
@@ -427,36 +432,41 @@ class Database:
 
     async def update_user_stats(self, user_id: int, amount: int, is_bankruptcy: bool = False):
         async with aiosqlite.connect(self.db_path) as db:
-            won_add = amount if amount > 0 else 0
-            lost_add = abs(amount) if amount < 0 else 0
-            bankruptcy_add = 1 if is_bankruptcy else 0
-            async with db.execute(
-                "SELECT total_won, total_lost FROM users WHERE user_id = ?", (user_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-            current_won = decode_money(row[0]) if row else 0
-            current_lost = decode_money(row[1]) if row else 0
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                won_add = amount if amount > 0 else 0
+                lost_add = abs(amount) if amount < 0 else 0
+                bankruptcy_add = 1 if is_bankruptcy else 0
+                async with db.execute(
+                    "SELECT total_won, total_lost FROM users WHERE user_id = ?", (user_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                current_won = decode_money(row[0]) if row else 0
+                current_lost = decode_money(row[1]) if row else 0
 
-            await db.execute(
-                """
-                UPDATE users
-                SET games_played = games_played + 1,
-                    total_won = ?,
-                    total_lost = ?,
-                    bankruptcy_count = bankruptcy_count + ?
-                WHERE user_id = ?
-            """,
-                (
-                    encode_money(current_won + won_add),
-                    encode_money(current_lost + lost_add),
-                    bankruptcy_add,
-                    user_id,
-                ),
-            )
-            await db.commit()
-            add_db_action(
-                f"Updated stats for user {user_id}: won={won_add}, lost={lost_add}, bankrupt={bankruptcy_add}"
-            )
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET games_played = games_played + 1,
+                        total_won = ?,
+                        total_lost = ?,
+                        bankruptcy_count = bankruptcy_count + ?
+                    WHERE user_id = ?
+                """,
+                    (
+                        encode_money(current_won + won_add),
+                        encode_money(current_lost + lost_add),
+                        bankruptcy_add,
+                        user_id,
+                    ),
+                )
+                await db.commit()
+                add_db_action(
+                    f"Updated stats for user {user_id}: won={won_add}, lost={lost_add}, bankrupt={bankruptcy_add}"
+                )
+            except Exception:
+                await db.rollback()
+                raise
 
     async def add_event(
         self,
@@ -513,17 +523,17 @@ class Database:
         chat_id: int = None,
     ):
         async with aiosqlite.connect(self.db_path) as db:
-            # Check balance
-            async with db.execute(
-                "SELECT balance FROM users WHERE user_id = ?", (from_user_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                sender_balance = decode_money(row[0]) if row else 0
-                if not row or sender_balance < amount:
-                    return False
-
-            # Transaction
             try:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT balance FROM users WHERE user_id = ?", (from_user_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    sender_balance = decode_money(row[0]) if row else 0
+                    if not row or sender_balance < amount:
+                        await db.rollback()
+                        return False
+
                 await db.execute(
                     "UPDATE users SET balance = ? WHERE user_id = ?",
                     (encode_money(sender_balance - amount), from_user_id),
@@ -555,7 +565,7 @@ class Database:
 
                     await db.execute(
                         "INSERT INTO event_history (event_id, user_id, event_type, amount, chat_id) VALUES (?, ?, 'bankruptcy', 0, ?)",
-                        (str(uuid.uuid4()), from_user_id, encode_money(0), chat_id),
+                        (str(uuid.uuid4()), from_user_id, chat_id),
                     )
                     await db.execute(
                         "UPDATE users SET bankruptcy_count = bankruptcy_count + 1 WHERE user_id = ?",
@@ -568,14 +578,6 @@ class Database:
                 )
                 return True
             except Exception:
-                # aiosqlite context manager automatically rolls back on exception if not committed,
-                # but we are inside a context manager for connect, not transaction.
-                # However, without BEGIN TRANSACTION explicitly, sqlite is in auto-commit mode usually,
-                # but aiosqlite might handle it.
-                # Ideally we should use `await db.execute("BEGIN TRANSACTION")` but let's trust the context or simple sequential execution for now.
-                # Actually aiosqlite connect context commits at the end if no error.
-                # If we raise here, it might rollback.
-                # Let's add explicit rollback just in case.
                 await db.rollback()
                 return False
 

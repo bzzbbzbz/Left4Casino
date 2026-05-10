@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -28,22 +29,89 @@ MONEY_COLUMN_TYPES: dict[str, set[str]] = {
 }
 
 
-def _column_def(table: str, col: aiosqlite.Row) -> str:
-    name = col["name"]
-    col_type = "TEXT" if name in MONEY_COLUMN_TYPES.get(table, set()) else (col["type"] or "")
-    parts = [f'"{name}"', col_type]
-    if col["pk"]:
-        parts.append("PRIMARY KEY")
-    if col["notnull"]:
-        parts.append("NOT NULL")
-    default = col["dflt_value"]
-    if name in MONEY_COLUMN_TYPES.get(table, set()):
-        if default is not None:
-            default_text = str(default).strip("'")
-            parts.append(f"DEFAULT '{default_text}'")
-    elif default is not None:
-        parts.append(f"DEFAULT {default}")
-    return " ".join(part for part in parts if part)
+def _split_top_level_csv(sql: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    for index, char in enumerate(sql):
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in ('"', "'", "`"):
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(sql[start:index].strip())
+            start = index + 1
+    parts.append(sql[start:].strip())
+    return parts
+
+
+def _replace_column_type(definition: str, money_columns: set[str]) -> str:
+    match = re.match(
+        r'^(?P<indent>\s*)(?P<name>"[^"]+"|`[^`]+`|\[[^\]]+\]|\w+)(?P<rest>\s+.*)?$',
+        definition,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return definition
+    raw_name = match.group("name")
+    column_name = raw_name.strip('"`[]')
+    if column_name not in money_columns:
+        return definition
+
+    rest = (match.group("rest") or "").lstrip()
+    constraints = (
+        "PRIMARY",
+        "NOT",
+        "NULL",
+        "DEFAULT",
+        "CHECK",
+        "COLLATE",
+        "REFERENCES",
+        "UNIQUE",
+        "GENERATED",
+        "AS",
+    )
+    tokens = rest.split(None, 1)
+    if tokens and tokens[0].upper() not in constraints:
+        rest = tokens[1] if len(tokens) == 2 else ""
+    if "DEFAULT" in rest.upper():
+        rest = re.sub(
+            r"(?i)\bDEFAULT\s+([+-]?\d+|'[+-]?\d+'|\"[+-]?\d+\")",
+            lambda m: f"DEFAULT '{m.group(1).strip(chr(39) + chr(34))}'",
+            rest,
+            count=1,
+        )
+    suffix = f" {rest}" if rest else ""
+    return f"{match.group('indent')}{raw_name} TEXT{suffix}"
+
+
+async def _table_create_sql(db: aiosqlite.Connection, table: str) -> str:
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    )
+    row = await cursor.fetchone()
+    if row is None or row[0] is None:
+        raise RuntimeError(f"Cannot find CREATE TABLE SQL for {table}")
+    return str(row[0])
+
+
+def _money_text_create_sql(create_sql: str, table: str) -> str:
+    money_columns = MONEY_COLUMN_TYPES.get(table, set())
+    open_index = create_sql.index("(")
+    close_index = create_sql.rindex(")")
+    prefix = create_sql[:open_index]
+    body = create_sql[open_index + 1 : close_index]
+    suffix = create_sql[close_index + 1 :]
+    definitions = [_replace_column_type(part, money_columns) for part in _split_top_level_csv(body)]
+    return f"{prefix}({', '.join(definitions)}){suffix}"
 
 
 async def _table_columns(db: aiosqlite.Connection, table: str) -> list[aiosqlite.Row]:
@@ -62,6 +130,11 @@ async def apply_bigint_money_migration(
 ) -> dict[str, Any]:
     """Convert configured money columns to TEXT by rebuilding affected tables."""
     report: dict[str, Any] = {"tables": {}, "dry_run": dry_run}
+    original_create_sqls: dict[str, str] = {}
+    for table in MONEY_COLUMN_TYPES:
+        if await _table_exists(db, table):
+            original_create_sqls[table] = await _table_create_sql(db, table)
+
     for table, money_columns in MONEY_COLUMN_TYPES.items():
         if not await _table_exists(db, table):
             report["tables"][table] = {"status": "missing"}
@@ -79,7 +152,7 @@ async def apply_bigint_money_migration(
 
         tmp = f"{table}__task016_old"
         col_names = [col["name"] for col in columns]
-        definitions = ", ".join(_column_def(table, col) for col in columns)
+        create_sql = _money_text_create_sql(original_create_sqls[table], table)
         quoted_cols = ", ".join(f'"{name}"' for name in col_names)
         select_exprs = []
         for name in col_names:
@@ -89,7 +162,7 @@ async def apply_bigint_money_migration(
                 select_exprs.append(f'"{name}"')
         await db.execute(f'DROP TABLE IF EXISTS "{tmp}"')
         await db.execute(f'ALTER TABLE "{table}" RENAME TO "{tmp}"')
-        await db.execute(f'CREATE TABLE "{table}" ({definitions})')
+        await db.execute(create_sql)
         await db.execute(
             f'INSERT INTO "{table}" ({quoted_cols}) SELECT {", ".join(select_exprs)} FROM "{tmp}"'
         )
@@ -126,6 +199,8 @@ async def init_schema_versions_table(db: aiosqlite.Connection) -> None:
 
 async def get_current_version(db: aiosqlite.Connection) -> int:
     """Get current schema version (max version from schema_versions)."""
+    if not await _table_exists(db, "schema_versions"):
+        return 0
     cursor = await db.execute("SELECT MAX(version) FROM schema_versions")
     result = await cursor.fetchone()
     return result[0] if result and result[0] is not None else 0
@@ -154,17 +229,31 @@ async def apply_migration(
     print(f"Applying migration {version}: {migration_file.name}")
 
     if version == 3:
-        report = await apply_bigint_money_migration(db, dry_run=dry_run)
-        print(f"  TASK-016 money migration report: {report}")
         if dry_run:
+            report = await apply_bigint_money_migration(db, dry_run=True)
+            print(f"  TASK-016 money migration report: {report}")
             return
-        await db.execute(
-            """INSERT INTO schema_versions (version, applied_at, description)
-               VALUES (?, datetime('now'), ?)""",
-            (version, migration_file.name),
-        )
-        await db.commit()
-        print(f"  ✓ Migration {version} applied successfully")
+        fk_row = await (await db.execute("PRAGMA foreign_keys")).fetchone()
+        foreign_keys_enabled = bool(fk_row and fk_row[0])
+        try:
+            await db.execute("PRAGMA foreign_keys = OFF")
+            await db.execute("BEGIN IMMEDIATE")
+            report = await apply_bigint_money_migration(db)
+            print(f"  TASK-016 money migration report: {report}")
+            await db.execute(
+                """INSERT INTO schema_versions (version, applied_at, description)
+                   VALUES (?, datetime('now'), ?)""",
+                (version, migration_file.name),
+            )
+            await db.commit()
+            if foreign_keys_enabled:
+                await db.execute("PRAGMA foreign_keys = ON")
+            print(f"  ✓ Migration {version} applied successfully")
+        except Exception:
+            await db.rollback()
+            if foreign_keys_enabled:
+                await db.execute("PRAGMA foreign_keys = ON")
+            raise
         return
 
     sql = migration_file.read_text()
@@ -202,7 +291,8 @@ def _sorted_migration_files() -> list[Path]:
 async def run_migrations(*, dry_run: bool = False, db_path: str | None = None) -> int:
     """Run all pending migrations. Returns new schema version."""
     async with aiosqlite.connect(db_path or DB_PATH) as db:
-        await init_schema_versions_table(db)
+        if not dry_run:
+            await init_schema_versions_table(db)
         current_version = await get_current_version(db)
 
         print(f"Current schema version: {current_version}")

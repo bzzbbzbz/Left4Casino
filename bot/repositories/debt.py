@@ -43,63 +43,68 @@ class DebtRepository(BaseRepository[Any]):
     ) -> None:
         """Add debt (or increase existing). Optionally net with reverse debt."""
         async with aiosqlite.connect(self.db_path) as db:
-            # [START SPEC:DEBT-SETTLEMENT:MutualOffset]
-            # REQ: Если A должен B и B должен A — долги взаимно сокращаются (взаимозачёт)
-            # Source: DICE_FIGHT_SPEC.md, "Взаимозачёт долгов"
-            # CRITICAL: Логика net влияет на лимиты ставок и корректность долгов
-            async with db.execute(
-                """SELECT debt_id, amount FROM player_debts
-                   WHERE chat_id = ? AND debtor_id = ? AND creditor_id = ?""",
-                (chat_id, creditor_id, debtor_id),
-            ) as cur:
-                reverse = await cur.fetchone()
-            if reverse:
-                rev_id, rev_amount = reverse[0], decode_money(reverse[1])
-                # Net: reduce reverse by amount, or delete; reduce new debt
-                if amount >= rev_amount:
-                    await db.execute(
-                        "DELETE FROM player_debts WHERE debt_id = ?",
-                        (rev_id,),
-                    )
-                    amount -= rev_amount
-                    if amount <= 0:
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                # [START SPEC:DEBT-SETTLEMENT:MutualOffset]
+                # REQ: Если A должен B и B должен A — долги взаимно сокращаются (взаимозачёт)
+                # Source: DICE_FIGHT_SPEC.md, "Взаимозачёт долгов"
+                # CRITICAL: Логика net влияет на лимиты ставок и корректность долгов
+                async with db.execute(
+                    """SELECT debt_id, amount FROM player_debts
+                       WHERE chat_id = ? AND debtor_id = ? AND creditor_id = ?""",
+                    (chat_id, creditor_id, debtor_id),
+                ) as cur:
+                    reverse = await cur.fetchone()
+                if reverse:
+                    rev_id, rev_amount = reverse[0], decode_money(reverse[1])
+                    # Net: reduce reverse by amount, or delete; reduce new debt
+                    if amount >= rev_amount:
+                        await db.execute(
+                            "DELETE FROM player_debts WHERE debt_id = ?",
+                            (rev_id,),
+                        )
+                        amount -= rev_amount
+                        if amount <= 0:
+                            await db.commit()
+                            return
+                    else:
+                        await db.execute(
+                            "UPDATE player_debts SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE debt_id = ?",
+                            (encode_money(rev_amount - amount), rev_id),
+                        )
                         await db.commit()
                         return
-                else:
+                # [END SPEC:DEBT-SETTLEMENT]
+                # Existing debt (debtor owes creditor)?
+                async with db.execute(
+                    """SELECT debt_id, amount FROM player_debts
+                       WHERE chat_id = ? AND debtor_id = ? AND creditor_id = ?""",
+                    (chat_id, debtor_id, creditor_id),
+                ) as cur:
+                    existing = await cur.fetchone()
+                if existing:
+                    new_amount = decode_money(existing[1]) + amount
                     await db.execute(
                         "UPDATE player_debts SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE debt_id = ?",
-                        (encode_money(rev_amount - amount), rev_id),
+                        (encode_money(new_amount), existing[0]),
                     )
-                    await db.commit()
-                    return
-            # [END SPEC:DEBT-SETTLEMENT]
-            # Existing debt (debtor owes creditor)?
-            async with db.execute(
-                """SELECT debt_id, amount FROM player_debts
-                   WHERE chat_id = ? AND debtor_id = ? AND creditor_id = ?""",
-                (chat_id, debtor_id, creditor_id),
-            ) as cur:
-                existing = await cur.fetchone()
-            if existing:
-                new_amount = decode_money(existing[1]) + amount
-                await db.execute(
-                    "UPDATE player_debts SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE debt_id = ?",
-                    (encode_money(new_amount), existing[0]),
-                )
-            else:
-                await db.execute(
-                    """INSERT INTO player_debts (debt_id, chat_id, debtor_id, creditor_id, amount, challenge_id)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        str(uuid.uuid4()),
-                        chat_id,
-                        debtor_id,
-                        creditor_id,
-                        encode_money(amount),
-                        challenge_id,
-                    ),
-                )
-            await db.commit()
+                else:
+                    await db.execute(
+                        """INSERT INTO player_debts (debt_id, chat_id, debtor_id, creditor_id, amount, challenge_id)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (
+                            str(uuid.uuid4()),
+                            chat_id,
+                            debtor_id,
+                            creditor_id,
+                            encode_money(amount),
+                            challenge_id,
+                        ),
+                    )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
     async def collect_debt(
         self, creditor_id: int, debtor_id: int, amount: int, chat_id: int
@@ -110,27 +115,31 @@ class DebtRepository(BaseRepository[Any]):
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT balance FROM users WHERE user_id = ?",
-                (debtor_id,),
-            ) as cur:
-                row = await cur.fetchone()
-            if not row:
-                return (False, "Должник не найден")
-            debtor_balance = decode_money(row["balance"])
-            async with db.execute(
-                """SELECT debt_id, amount FROM player_debts
-                   WHERE chat_id = ? AND debtor_id = ? AND creditor_id = ?""",
-                (chat_id, debtor_id, creditor_id),
-            ) as cur:
-                debt_row = await cur.fetchone()
-            if not debt_row or decode_money(debt_row["amount"]) <= 0:
-                return (False, "Нет долга")
-            debt_amount = decode_money(debt_row["amount"])
-            actual = min(amount, debt_amount, debtor_balance)
-            if actual <= 0:
-                return (False, "У должника нет средств")
             try:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT balance FROM users WHERE user_id = ?",
+                    (debtor_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                if not row:
+                    await db.rollback()
+                    return (False, "Должник не найден")
+                debtor_balance = decode_money(row["balance"])
+                async with db.execute(
+                    """SELECT debt_id, amount FROM player_debts
+                       WHERE chat_id = ? AND debtor_id = ? AND creditor_id = ?""",
+                    (chat_id, debtor_id, creditor_id),
+                ) as cur:
+                    debt_row = await cur.fetchone()
+                if not debt_row or decode_money(debt_row["amount"]) <= 0:
+                    await db.rollback()
+                    return (False, "Нет долга")
+                debt_amount = decode_money(debt_row["amount"])
+                actual = min(amount, debt_amount, debtor_balance)
+                if actual <= 0:
+                    await db.rollback()
+                    return (False, "У должника нет средств")
                 await db.execute(
                     "UPDATE users SET balance = ? WHERE user_id = ?",
                     (encode_money(debtor_balance - actual), debtor_id),

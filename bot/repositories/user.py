@@ -53,8 +53,23 @@ class UserRepository(BaseRepository[User]):
 
     async def update_balance(self, user_id: int, amount: int) -> None:
         """Update user balance (add amount)."""
-        current = await self.get_balance(user_id)
-        await self.set_balance(user_id, current + amount)
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT balance FROM users WHERE user_id = ?",
+                    (user_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                current = decode_money(row[0]) if row else 0
+                await db.execute(
+                    "UPDATE users SET balance = ? WHERE user_id = ?",
+                    (encode_money(current + amount), user_id),
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
     async def set_balance(self, user_id: int, new_balance: int) -> None:
         """Set user balance to new value."""
@@ -108,28 +123,37 @@ class UserRepository(BaseRepository[User]):
         self, user_id: int, amount: int, is_bankruptcy: bool = False
     ) -> None:
         """Update games_played, total_won, total_lost, bankruptcy_count."""
-        won_add = amount if amount > 0 else 0
-        lost_add = abs(amount) if amount < 0 else 0
-        bankruptcy_add = 1 if is_bankruptcy else 0
-        row = await self._fetchone(
-            "SELECT total_won, total_lost FROM users WHERE user_id = ?", (user_id,)
-        )
-        current_won = decode_money(row["total_won"]) if row else 0
-        current_lost = decode_money(row["total_lost"]) if row else 0
-        await self._execute(
-            """UPDATE users
-               SET games_played = games_played + 1,
-                   total_won = ?,
-                   total_lost = ?,
-                   bankruptcy_count = bankruptcy_count + ?
-               WHERE user_id = ?""",
-            (
-                encode_money(current_won + won_add),
-                encode_money(current_lost + lost_add),
-                bankruptcy_add,
-                user_id,
-            ),
-        )
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                won_add = amount if amount > 0 else 0
+                lost_add = abs(amount) if amount < 0 else 0
+                bankruptcy_add = 1 if is_bankruptcy else 0
+                async with db.execute(
+                    "SELECT total_won, total_lost FROM users WHERE user_id = ?", (user_id,)
+                ) as cur:
+                    row = await cur.fetchone()
+                current_won = decode_money(row["total_won"]) if row else 0
+                current_lost = decode_money(row["total_lost"]) if row else 0
+                await db.execute(
+                    """UPDATE users
+                       SET games_played = games_played + 1,
+                           total_won = ?,
+                           total_lost = ?,
+                           bankruptcy_count = bankruptcy_count + ?
+                       WHERE user_id = ?""",
+                    (
+                        encode_money(current_won + won_add),
+                        encode_money(current_lost + lost_add),
+                        bankruptcy_add,
+                        user_id,
+                    ),
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
     async def increment_bankruptcy_count(self, user_id: int) -> None:
         """Increment user's bankruptcy_count by 1."""
@@ -146,28 +170,34 @@ class UserRepository(BaseRepository[User]):
     ) -> bool:
         """Atomic balance transfer. Returns False if insufficient balance."""
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT balance FROM users WHERE user_id = ?",
-                (from_user_id,),
-            ) as cur:
-                row = await cur.fetchone()
-            sender_balance = decode_money(row[0]) if row else 0
-            if row is None or sender_balance < amount:
-                return False
-            async with db.execute(
-                "SELECT balance FROM users WHERE user_id = ?", (to_user_id,)
-            ) as cur:
-                receiver_row = await cur.fetchone()
-            receiver_balance = decode_money(receiver_row[0]) if receiver_row else 0
-            await db.execute(
-                "UPDATE users SET balance = ? WHERE user_id = ?",
-                (encode_money(sender_balance - amount), from_user_id),
-            )
-            await db.execute(
-                "UPDATE users SET balance = ? WHERE user_id = ?",
-                (encode_money(receiver_balance + amount), to_user_id),
-            )
-            await db.commit()
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT balance FROM users WHERE user_id = ?",
+                    (from_user_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                sender_balance = decode_money(row[0]) if row else 0
+                if row is None or sender_balance < amount:
+                    await db.rollback()
+                    return False
+                async with db.execute(
+                    "SELECT balance FROM users WHERE user_id = ?", (to_user_id,)
+                ) as cur:
+                    receiver_row = await cur.fetchone()
+                receiver_balance = decode_money(receiver_row[0]) if receiver_row else 0
+                await db.execute(
+                    "UPDATE users SET balance = ? WHERE user_id = ?",
+                    (encode_money(sender_balance - amount), from_user_id),
+                )
+                await db.execute(
+                    "UPDATE users SET balance = ? WHERE user_id = ?",
+                    (encode_money(receiver_balance + amount), to_user_id),
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
         return True
 
     async def get_safe_balance(self, user_id: int) -> int:
@@ -190,25 +220,32 @@ class UserRepository(BaseRepository[User]):
         """Deposit to safe (balance -> safe_balance). Returns (True, new_balance, new_safe) or (False, error)."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT balance, safe_balance FROM users WHERE user_id = ?",
-                (user_id,),
-            ) as cur:
-                row = await cur.fetchone()
-            if row is None:
-                return (False, "Пользователь не найден")
-            balance = decode_money(row["balance"])
-            safe_balance = decode_money(row["safe_balance"])
-            if balance < amount:
-                return (False, "Недостаточно средств на балансе")
-            await db.execute(
-                """UPDATE users
-                   SET balance = ?,
-                       safe_balance = ?
-                   WHERE user_id = ?""",
-                (encode_money(balance - amount), encode_money(safe_balance + amount), user_id),
-            )
-            await db.commit()
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT balance, safe_balance FROM users WHERE user_id = ?",
+                    (user_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is None:
+                    await db.rollback()
+                    return (False, "Пользователь не найден")
+                balance = decode_money(row["balance"])
+                safe_balance = decode_money(row["safe_balance"])
+                if balance < amount:
+                    await db.rollback()
+                    return (False, "Недостаточно средств на балансе")
+                await db.execute(
+                    """UPDATE users
+                       SET balance = ?,
+                           safe_balance = ?
+                       WHERE user_id = ?""",
+                    (encode_money(balance - amount), encode_money(safe_balance + amount), user_id),
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
         return (True, balance - amount, safe_balance + amount)
 
     # [END SPEC:SAFE-ATOMIC]
@@ -223,25 +260,32 @@ class UserRepository(BaseRepository[User]):
         """Withdraw from safe (safe_balance -> balance). Returns (True, new_balance, new_safe) or (False, error)."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT balance, safe_balance FROM users WHERE user_id = ?",
-                (user_id,),
-            ) as cur:
-                row = await cur.fetchone()
-            if row is None:
-                return (False, "Пользователь не найден")
-            balance = decode_money(row["balance"])
-            safe_balance = decode_money(row["safe_balance"])
-            if safe_balance < amount:
-                return (False, "Недостаточно средств в сейфе")
-            await db.execute(
-                """UPDATE users
-                   SET safe_balance = ?,
-                       balance = ?
-                   WHERE user_id = ?""",
-                (encode_money(safe_balance - amount), encode_money(balance + amount), user_id),
-            )
-            await db.commit()
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    "SELECT balance, safe_balance FROM users WHERE user_id = ?",
+                    (user_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is None:
+                    await db.rollback()
+                    return (False, "Пользователь не найден")
+                balance = decode_money(row["balance"])
+                safe_balance = decode_money(row["safe_balance"])
+                if safe_balance < amount:
+                    await db.rollback()
+                    return (False, "Недостаточно средств в сейфе")
+                await db.execute(
+                    """UPDATE users
+                       SET safe_balance = ?,
+                           balance = ?
+                       WHERE user_id = ?""",
+                    (encode_money(safe_balance - amount), encode_money(balance + amount), user_id),
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
         return (True, balance + amount, safe_balance - amount)
 
     # [END SPEC:SAFE-ATOMIC]
