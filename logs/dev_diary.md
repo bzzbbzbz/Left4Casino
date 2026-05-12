@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-05-12: Release cleanup after prod rollout
+
+**Decision**: Закрыты и заархивированы `TASK-016`, `TASK-017` и `TASK-019`, потому что код, миграция и E2E flow прошли stage/prod verification, а production rollout завершён.
+
+**Reasoning**: Эти задачи больше не требуют ручного merge-gate в `status.yaml`: prod DB мигрирована до schema version 3, prod Docker runtime запущен, `prod-smoke` зелёный, stage service активен, stage-only hooks в prod env отсутствуют.
+
+**Result**: Спеки перемещены в `docs/specs/archive/`, `status.yaml` обновлён до `DONE`. `TASK-023` оставлен как отдельная будущая доработка daily report E2E.
+
+**References**: `docs/specs/archive/TASK-016_BIGINT_MONEY_STORAGE.md`, `docs/specs/archive/TASK-017_DAILY_CODE_QUALITY_REPORT.md`, `docs/specs/archive/TASK-019_TELEGRAM_E2E_BOT_TESTER.md`, `status.yaml`.
+
+---
+
+## 2026-05-12: TASK-019 safe prod smoke
+
+**Decision**: `telegram_e2e_smoke.py` получил сценарий `prod-smoke`, который тем же tester-ботом проверяет production-бота в общем test-чате через явные команды `@Left4CasinoBot`.
+
+**Reasoning**: После production rollout нужна быстрая автоматическая проверка, что prod-бот отвечает именно актуальным командным контрактом, но без прямого доступа к prod DB, слотов, `/bid`, `/credit` и stage-only hooks. Штатная обработка команд prod-ботом может обновить activity/user rows, поэтому сценарий не называется zero-write DB probe.
+
+**Result**: `prod-smoke` проверяет `/balance`, `/safe`, `/stats`, `/top`, `/help`, запрещает mutating guards, опционально валидирует prod command menu через `TELEGRAM_E2E_PROD_BOT_TOKEN` с проверкой владельца токена и ловит legacy fork `/help`. Текущий live prod до rollout достижим, но строгий `prod-smoke` ожидаемо падает на legacy `/help`.
+
+**References**: TASK-019, `scripts/telegram_e2e_smoke.py`, `tests/unit/test_telegram_e2e_smoke.py`, `docs/STAGING_PROD_RUNBOOK.md`.
+
+---
+
 ## 2026-05-10: TASK-022 `/credit` LLM fallback fix
 
 **Decision**: `AIClient` теперь явно маршрутизирует провайдеры: `mock` не создаёт LLM-клиент и возвращает локальный fallback, `openrouter` всегда использует OpenRouter endpoint с ключом из env или config, а `openai` использует OpenAI endpoint/key.

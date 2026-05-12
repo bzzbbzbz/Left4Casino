@@ -23,6 +23,46 @@
 3. **Verification**: Запуск тестов и линтеров прямо в Composer.
 4. **Documentation**: Фиксация итогов в `logs/dev_diary.md` и обновление `status.yaml`.
 
+### Feature Delivery Flow
+
+```mermaid
+flowchart TD
+    A[Идея или баг от пользователя] --> B[ТЗ и spec в docs/specs]
+    B --> C[Запись задачи в status.yaml]
+    C --> D[Feature branch от актуальной базовой ветки]
+    D --> E[Код и unit/integration тесты]
+    E --> F[./scripts/test.sh]
+    F --> G[./scripts/lint.sh]
+    G --> H[Code review через отдельного субагента]
+    H --> I{Есть blockers?}
+    I -- Да --> E
+    I -- Нет --> J[Push feature branch]
+    J --> K[Deploy на live stage]
+    K --> L[Backup stage DB/config]
+    L --> M[Stage migration, если нужна]
+    M --> N[Stage E2E: stage-parity, smoke, economy, events, schedule-readiness]
+    N --> O{Stage зелёный?}
+    O -- Нет --> E
+    O -- Да --> P[Prod rollout plan]
+    P --> Q[Backup prod DB/config]
+    Q --> R[Stop prod runtime]
+    R --> S[Deploy pinned commit и миграции]
+    S --> T[Start prod runtime]
+    T --> U[Manual prod smoke и logs]
+```
+
+### Current Verification Order
+
+- Для любого кода сначала запускать targeted tests по изменённым зонам, затем полный `./scripts/test.sh`.
+- После тестов запускать `./scripts/lint.sh` — он выполняет `ruff check`, `ruff format --check`, `pyright`.
+- Не запускать сырой `pytest` вне `.venv`; использовать только `./scripts/test.sh`, чтобы не словить конфликт системных зависимостей.
+- Для миграций БД: сначала backup, затем dry-run/тест на копии, затем остановить runtime, применить миграцию, проверить `migration_runner.py --dry-run`.
+- Live stage E2E запускать только против stage DB/chat/token и только изолированно: **не запускать live E2E сценарии параллельно в одном Telegram-чате**, иначе ответы могут перемешаться.
+- Обязательные stage E2E после крупных изменений: `stage-parity`, `smoke`, `economy`, `events`, `schedule-readiness` strict.
+- `events` E2E требует stage-only hooks: `LEFT4CASINO_E2E_HOOKS_ENABLED=1`, валидный `LEFT4CASINO_E2E_HOOKS_ALLOWED_USER_ID`, `TELEGRAM_E2E_ALLOW_EVENT_HOOKS=1`, `TELEGRAM_E2E_ALLOW_DB_MUTATION=1`.
+- Production E2E не запускает mutating economy flows: на prod только safe smoke после backup/deploy/migration.
+- Для `/credit` live-проверки нужен `provider = "openrouter"` или `provider = "openai"` и валидный ключ. Env key имеет приоритет над `[ai].api_key` в TOML.
+
 ### Core Roles (Context Modes)
 
 Используйте переключение контекста через `.cursorrules` и промпты:
@@ -99,6 +139,9 @@
 - не использовать один и тот же bot token для двух сред;
 - перед изменениями в production делать backup `settings.toml` и `bot/casino.db`;
 - не переводить production с Docker на systemd без явного запроса пользователя;
+- stage сейчас использует `/opt/left4casino/python-runner-stage/env/stage.env`; файлы `env/stage.example.env` и `env/prod.example.env` — только шаблоны;
+- live prod в текущей Docker-схеме не читает `env/prod.example.env`; для текущего prod важен `/root/n8n-install/python-runner/settings.toml` и env контейнера;
+- stage-only E2E hooks никогда не включать в prod env;
 - при доработке процесса stage/prod сначала читать `TASK-018` и `docs/STAGING_PROD_RUNBOOK.md`.
 
 ### Semantic Regions
@@ -121,7 +164,7 @@
 
 | Команда | Описание |
 |---------|----------|
-| `/start`, `/balance` | Баланс и базовая информация |
+| `/balance` | Баланс и базовая информация |
 | `/bid [N]` | Установить множитель ставки (all-in если > баланса) |
 | `/stats [@user]` | Персональная статистика игрока |
 | `/top` | Топ-10 игроков группы |
@@ -154,7 +197,7 @@ python-runner/
     │   ├── db.py               # SQLite ORM (aiosqlite)
     │   ├── dice_check.py       # Логика расчёта выигрыша по значению dice
     │   ├── handlers/           # Обработчики команд
-    │   │   ├── default_commands.py  # /start, /balance, /stats, /bid
+    │   │   ├── default_commands.py  # /balance, /bid, /help, /stop
     │   │   ├── spin.py              # Логика dice/slots
     │   │   ├── group_games.py       # Обработка 🎰 в группах (+ heist mode)
     │   │   ├── transfer.py          # /give — переводы
@@ -630,13 +673,75 @@ docker-compose up --profile all -d
 
 ## Quality Checks
 
-Перед push рекомендуется запускать линтеры и проверку типов:
+Перед push и перед stage/prod rollout обязательно запускать проверки через project scripts:
 
 ```bash
-# Полная проверка (ruff lint + format check + pyright)
-./scripts/lint.sh
+# Targeted tests по изменённой зоне
+./scripts/test.sh tests/unit/test_ai_client.py tests/unit/test_ai_credit_handler.py
 
-# Или по отдельности
+# Полный test suite
+./scripts/test.sh
+
+# Линт, формат и типы
+./scripts/lint.sh
+```
+
+Live stage E2E запускать только после deploy на stage и только по одному сценарию за раз:
+
+```bash
+# Strict command/menu parity: /start должен быть unhandled
+TELEGRAM_E2E_SCENARIO=stage-parity python scripts/telegram_e2e_smoke.py
+
+# Smoke: /balance, /bid, /safe, slots, /stats, /top
+TELEGRAM_E2E_SCENARIO=smoke python scripts/telegram_e2e_smoke.py
+
+# Economy: all-in bid, safe deposit/withdraw, /credit, bankruptcy, spin-until-win
+TELEGRAM_E2E_SCENARIO=economy \
+TELEGRAM_E2E_ALLOW_DB_MUTATION=1 \
+python scripts/telegram_e2e_smoke.py
+
+# Happy Moment + Heist live flow via stage-only hooks
+TELEGRAM_E2E_SCENARIO=events \
+TELEGRAM_E2E_ALLOW_EVENT_HOOKS=1 \
+TELEGRAM_E2E_ALLOW_DB_MUTATION=1 \
+python scripts/telegram_e2e_smoke.py
+
+# Read-only schedule check, strict mode catches missing schedules and leaked E2E running rows
+TELEGRAM_E2E_SCENARIO=schedule-readiness \
+TELEGRAM_E2E_SCHEDULE_STRICT=1 \
+python scripts/telegram_e2e_smoke.py
+```
+
+Production checks are manual and avoid mutating economy flows except for the intended deploy/migration:
+
+```bash
+# Before migration
+cp -a settings.toml "$BACKUP_DIR/settings.toml"
+cp -a bot/casino.db "$BACKUP_DIR/casino.db.before-rollout"
+
+# During rollout: stop runtime, migrate, verify, start runtime
+CASINO_DB_PATH=/root/n8n-install/python-runner/bot/casino.db python3 migrations/migration_runner.py
+CASINO_DB_PATH=/root/n8n-install/python-runner/bot/casino.db python3 migrations/migration_runner.py --dry-run
+```
+
+После production start можно запустить safe bot-to-bot smoke против prod-бота в test-чате, где также находится stage-бот:
+
+Команда предполагает, что уже загружены E2E env для tester token, stage settings/db path и target chat (например, из `.env.e2e`).
+
+```bash
+TELEGRAM_E2E_SCENARIO=prod-smoke \
+TELEGRAM_E2E_PROD_BOT_USERNAME=Left4CasinoBot \
+TELEGRAM_E2E_TARGET_CHAT_ID=-1003497462507 \
+.venv/bin/python scripts/telegram_e2e_smoke.py
+```
+
+`prod-smoke` отправляет только `/balance`, `/safe`, `/stats`, `/top`, `/help` с явным `@prod_bot`, не читает prod DB напрямую, не запускает slots, `/bid`, `/credit` или E2E hooks. Штатная обработка этих команд prod-ботом может обновить activity/user rows, поэтому это не mutating economy E2E, но и не zero-write DB probe. Если задан `TELEGRAM_E2E_PROD_BOT_TOKEN`, дополнительно проверяется Bot API command menu prod-бота без вывода токена и с проверкой владельца токена.
+
+После production start также проверять вручную при необходимости: `/balance`, `/top`, `/stats`, `/bid 1`, один slot spin, `/safe`, `/credit` при валидном LLM ключе, Docker logs без tracebacks.
+
+Для локальной диагностики можно запускать инструменты отдельно, но не вместо обязательных scripts:
+
+```bash
 ruff check .
 ruff format --check .
 pyright

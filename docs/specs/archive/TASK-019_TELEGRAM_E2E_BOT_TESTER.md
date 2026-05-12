@@ -1,7 +1,7 @@
 # TASK-019: Telegram bot-to-bot E2E tester
 
 **ID**: TASK-019  
-**Title**: Автоматический E2E smoke-тестер для staging-бота через bot-to-bot Telegram  
+**Title**: Автоматический E2E smoke-тестер для stage/prod-ботов через bot-to-bot Telegram  
 **Priority**: MEDIUM  
 **Status**: READY_TO_MERGE  
 **Created**: 2026-05-09  
@@ -14,6 +14,8 @@
 Telegram добавил возможность bot-to-bot communication: боты могут получать сообщения от других ботов в группах и приватных чатах при включённом режиме в BotFather и соблюдении условий доставки сообщений.
 
 Это позволяет сделать отдельного тестового бота, который будет автоматически проверять staging-бота в отдельном Telegram-чате по заранее заданным сценариям. Цель — уменьшить ручные smoke-проверки в Telegram после релизов и инфраструктурных изменений.
+
+Дополнение 2026-05-12: тот же tester-бот должен уметь запускать safe smoke против production-бота в общем test-чате, где находятся stage-бот и prod-бот. Это нужно для быстрой проверки после production rollout без mutating economy сценариев и без прямого доступа к prod DB.
 
 ---
 
@@ -71,6 +73,19 @@ Bot-to-bot smoke не заменяет unit/integration тесты, а допо�
 - CI не требует реального Telegram-токена по умолчанию.
 - Live smoke можно запускать вручную перед merge/deploy или по расписанию на stage.
 
+### REQ-019-6: Safe production smoke в test-чате
+
+Тестер выполняет безопасный smoke против production-бота в том же test-чате, где расположен stage-бот.
+
+**Acceptance Criteria:**
+- Сценарий запускается как `TELEGRAM_E2E_SCENARIO=prod-smoke`.
+- Production bot адресуется явно через `TELEGRAM_E2E_PROD_BOT_USERNAME`, например `/balance@Left4CasinoBot`.
+- Сценарий проверяет только `/balance`, `/safe`, `/stats`, `/top`, `/help`.
+- Сценарий не запускает slots, `/bid`, `/credit`, event hooks и не читает prod SQLite напрямую.
+- Сценарий допускает штатные activity/user row updates от самого prod-бота и не позиционируется как zero-write DB probe.
+- `TELEGRAM_E2E_ALLOW_DB_MUTATION=1` и `TELEGRAM_E2E_ALLOW_EVENT_HOOKS=1` для `prod-smoke` запрещены.
+- Если задан `TELEGRAM_E2E_PROD_BOT_TOKEN`, проверяется Bot API command menu production-бота без вывода токена и с проверкой, что токен принадлежит `TELEGRAM_E2E_PROD_BOT_USERNAME`.
+
 ---
 
 ## Goals
@@ -92,12 +107,14 @@ Bot-to-bot smoke не заменяет unit/integration тесты, а допо�
 ```text
 staging Telegram group
 ├── @Left4CasinoStageBot      # тестируемый бот
+├── @Left4CasinoBot           # production-бот для safe prod-smoke
 └── @Left4CasinoE2ETestBot    # бот-тестер
 
 scripts/telegram_e2e_smoke.py
 ├── читает env/config stage
 ├── отправляет команды и dice в staging chat
 ├── ждёт ответы stage-бота
+├── для prod-smoke ждёт ответы prod-бота
 ├── валидирует текстовые ожидания
 ├── проверяет stage SQLite
 └── выводит итоговый отчёт
@@ -177,6 +194,13 @@ TELEGRAM_E2E_SCENARIO=schedule-readiness python scripts/telegram_e2e_smoke.py
 TELEGRAM_E2E_SCENARIO=schedule-readiness \
 TELEGRAM_E2E_SCHEDULE_STRICT=1 \
 python scripts/telegram_e2e_smoke.py
+
+# Safe production bot smoke in the shared test chat.
+# Requires the same protected E2E env as stage scenarios: tester token, stage settings/db path and target chat.
+TELEGRAM_E2E_SCENARIO=prod-smoke \
+TELEGRAM_E2E_PROD_BOT_USERNAME=Left4CasinoBot \
+TELEGRAM_E2E_TARGET_CHAT_ID=-1003497462507 \
+.venv/bin/python scripts/telegram_e2e_smoke.py
 ```
 
 `TELEGRAM_E2E_STAGE_BOT_TOKEN` is optional and never logged; when present it is used only
@@ -187,12 +211,16 @@ stage runtime config/restart outside this script.
 Economy DB setup is repeatable only with `TELEGRAM_E2E_ALLOW_DB_MUTATION=1`: it resets the
 tester balance, bid, safe balance, state and old active credit sessions under the stage DB guard.
 Credit and bankruptcy checks compare against before snapshots so stale rows cannot satisfy them.
+`prod-smoke` reuses the tester bot and target test chat, but performs only Telegram-visible checks.
+It fails if production `/help` still exposes legacy fork text, so it can confirm the command-contract
+cleanup after rollout.
 
 Ожидаемый результат:
 - сценарий завершается успешно;
 - stage-бот отвечает в staging-чате;
 - `event_history` содержит события тестера;
 - stage-БД изменилась, production-БД не затронута.
+- `prod-smoke` завершается успешно после rollout и не выполняет mutating economy flows.
 
 ---
 
@@ -208,7 +236,7 @@ Credit and bankruptcy checks compare against before snapshots so stale rows cann
 ## Out Of Scope
 
 - Замена unit/integration тестов.
-- Запуск против production.
+- Мутирующие E2E-сценарии против production.
 - Автоматическое нажатие inline-кнопок через Bot API.
 - Использование userbot/MTProto/Telethon для обхода ограничений callback-кнопок.
 

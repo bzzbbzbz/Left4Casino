@@ -82,14 +82,14 @@ tasks:
     priority: HIGH
   - id: TASK-016
     name: "Big integer money storage for 10^24+ balances"
-    status: READY_TO_MERGE
-    spec: docs/specs/TASK-016_BIGINT_MONEY_STORAGE.md
+    status: DONE
+    spec: docs/specs/archive/TASK-016_BIGINT_MONEY_STORAGE.md
     assignee: cursor-agent
     priority: HIGH
   - id: TASK-017
     name: "Daily code quality report (lint export + OpenCode CLI + admin report)"
-    status: READY_TO_MERGE
-    spec: docs/specs/TASK-017_DAILY_CODE_QUALITY_REPORT.md
+    status: DONE
+    spec: docs/specs/archive/TASK-017_DAILY_CODE_QUALITY_REPORT.md
     assignee: cursor-agent
     priority: MEDIUM
   - id: TASK-018
@@ -99,9 +99,9 @@ tasks:
     assignee: cursor-agent
     priority: HIGH
   - id: TASK-019
-    name: "Telegram bot-to-bot E2E smoke tester for staging"
-    status: READY_TO_MERGE
-    spec: docs/specs/TASK-019_TELEGRAM_E2E_BOT_TESTER.md
+    name: "Telegram bot-to-bot E2E smoke tester for stage/prod"
+    status: DONE
+    spec: docs/specs/archive/TASK-019_TELEGRAM_E2E_BOT_TESTER.md
     assignee: cursor-agent
     priority: MEDIUM
   - id: TASK-020
@@ -122,3 +122,9 @@ tasks:
     spec: docs/specs/archive/TASK-022_CREDIT_LLM_FALLBACK.md
     assignee: cursor-agent
     priority: HIGH
+  - id: TASK-023
+    name: "Daily report manual trigger E2E coverage"
+    status: SPEC_READY
+    spec: docs/specs/TASK-023_DAILY_REPORT_E2E_MANUAL_TRIGGER.md
+    assignee: cursor-agent
+    priority: MEDIUM

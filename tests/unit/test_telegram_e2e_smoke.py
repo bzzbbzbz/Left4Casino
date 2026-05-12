@@ -207,6 +207,22 @@ class FakeStartIgnoredReplyBot(FakeOffsetAwareReplyBot):
         return {"message_id": self.update_id, "chat": {"id": chat_id}, "text": text}
 
 
+class FakeProdSmokeReplyBot(FakeOffsetAwareReplyBot):
+    async def send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+        self.sent_texts.append(text)
+        self.update_id += 1
+        command = text.split("@", maxsplit=1)[0]
+        replies = {
+            "/balance": "Ваш баланс: 50",
+            "/safe": "🔐 В сейфе: 0 очков\n💰 Баланс: 50 очков",
+            "/stats": "📊 Статистика игрока TesterBot",
+            "/top": "🏆 Топ игроков чата test",
+            "/help": "<b>Команды Left4Casino</b>\n/balance\n/safe\n/credit",
+        }
+        self.updates.append(self._make_update(self.update_id, replies[command], chat_id=chat_id))
+        return {"message_id": self.update_id, "chat": {"id": chat_id}, "text": text}
+
+
 class FakeHookAckBot(FakeNoReplyBot):
     def __init__(
         self,
@@ -528,6 +544,30 @@ def test_smoke_steps_start_with_balance_not_start() -> None:
     assert all(step.text is None or not step.text.startswith("/start") for step in steps)
 
 
+def test_prod_smoke_steps_are_read_only_and_target_prod_username() -> None:
+    steps = smoke.build_prod_smoke_steps("@Left4CasinoBot")
+
+    assert [step.name for step in steps] == ["balance", "safe", "stats", "top", "help"]
+    assert [step.action for step in steps] == ["message"] * 5
+    assert all(step.text is not None and step.text.endswith("@Left4CasinoBot") for step in steps)
+    assert all("/bid" not in str(step.text) for step in steps)
+    assert all(step.emoji is None for step in steps)
+
+
+def test_prod_smoke_reply_contract_rejects_legacy_help() -> None:
+    step = smoke.ScenarioStep("help", "message", "/help@Left4CasinoBot")
+
+    with pytest.raises(smoke.SmokeFailureError, match="legacy casino help"):
+        smoke.assert_prod_smoke_step_reply(
+            step,
+            [
+                {
+                    "text": "Исходный код бота доступен на GitHub и на GitLab. /spin",
+                }
+            ],
+        )
+
+
 def test_event_hook_scenario_requires_explicit_opt_in(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.stage.toml"
     db_path = tmp_path / "casino.db"
@@ -771,6 +811,39 @@ async def test_stage_parity_execute_does_not_require_db_state_delta(tmp_path: Pa
     assert report.db_assertions["before"] == report.db_assertions["after"]
 
 
+@pytest.mark.asyncio
+async def test_prod_smoke_execute_skips_db_and_targets_prod_bot(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    write_stage_settings(settings_path, [-1001])
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_DRY_RUN"] = "false"
+    env["TELEGRAM_E2E_SCENARIO"] = "prod-smoke"
+    env["TELEGRAM_E2E_PROD_BOT_USERNAME"] = "@Left4CasinoBot"
+    env["TELEGRAM_E2E_RATE_LIMIT_SECONDS"] = "0"
+    env["TELEGRAM_E2E_TIMEOUT_SECONDS"] = "0.01"
+    config = smoke.E2EConfig.from_env(env)
+    api = FakeProdSmokeReplyBot()
+
+    report = await smoke.execute(config, api, stage_api=None, prod_api=None)
+
+    assert report.ok is True
+    assert [step["name"] for step in report.steps] == ["balance", "safe", "stats", "top", "help"]
+    assert api.sent_texts == [
+        "/balance@Left4CasinoBot",
+        "/safe@Left4CasinoBot",
+        "/stats@Left4CasinoBot",
+        "/top@Left4CasinoBot",
+        "/help@Left4CasinoBot",
+    ]
+    assert report.preflight is not None
+    assert report.preflight["target_bot"] == "prod"
+    assert report.command_menu == {"skipped": "TELEGRAM_E2E_PROD_BOT_TOKEN not set"}
+    assert report.db_assertions == {
+        "skipped": "prod-smoke does not access production DB directly or run economy mutation steps"
+    }
+
+
 def test_credit_assertion_requires_fresh_session(tmp_path: Path) -> None:
     db_path = tmp_path / "casino.db"
     create_user_db(db_path)
@@ -881,7 +954,9 @@ async def test_async_main_reports_sqlite_schema_errors_as_json(
         config: smoke.E2EConfig,
         api: smoke.BotApiProtocol,
         stage_api: smoke.BotApiProtocol | None = None,
+        prod_api: smoke.BotApiProtocol | None = None,
     ) -> smoke.SmokeReport:
+        _ = prod_api
         raise sqlite3.OperationalError("no such column: created_at")
 
     monkeypatch.setattr(smoke, "execute", raise_schema_error)
@@ -919,6 +994,44 @@ def test_stage_token_is_optional_and_redacted(tmp_path: Path) -> None:
 
     assert config.stage_bot_token == "stage-secret"
     assert config.redacted()["stage_bot_token"] == "<redacted>"
+
+
+def test_prod_smoke_requires_prod_username(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_SCENARIO"] = "prod-smoke"
+
+    with pytest.raises(smoke.ConfigError, match="TELEGRAM_E2E_PROD_BOT_USERNAME"):
+        smoke.E2EConfig.from_env(env)
+
+
+def test_prod_smoke_refuses_mutating_guards(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_SCENARIO"] = "prod-smoke"
+    env["TELEGRAM_E2E_PROD_BOT_USERNAME"] = "@Left4CasinoBot"
+    env["TELEGRAM_E2E_ALLOW_DB_MUTATION"] = "1"
+
+    with pytest.raises(smoke.ConfigError, match="refuses TELEGRAM_E2E_ALLOW_DB_MUTATION"):
+        smoke.E2EConfig.from_env(env)
+
+
+def test_prod_token_is_optional_and_redacted(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.stage.toml"
+    db_path = tmp_path / "casino.db"
+    env = base_env(tmp_path, settings_path, db_path)
+    env["TELEGRAM_E2E_SCENARIO"] = "prod-smoke"
+    env["TELEGRAM_E2E_PROD_BOT_USERNAME"] = "@Left4CasinoBot"
+    env["TELEGRAM_E2E_PROD_BOT_TOKEN"] = "prod-secret"
+
+    config = smoke.E2EConfig.from_env(env)
+
+    assert config.prod_bot_username == "Left4CasinoBot"
+    assert config.target_bot_username == "Left4CasinoBot"
+    assert config.command_menu_token_env == "TELEGRAM_E2E_PROD_BOT_TOKEN"
+    assert config.redacted()["prod_bot_token"] == "<redacted>"
 
 
 def test_legacy_start_detection_rejects_text_and_reply_markup() -> None:
@@ -999,6 +1112,21 @@ async def test_command_menu_validation_rejects_stale_advertised_commands() -> No
 
     with pytest.raises(smoke.SmokeFailureError, match="stale commands in all_group_chats: spin"):
         await smoke.validate_stage_command_menu(FakeStageApi())
+
+
+@pytest.mark.asyncio
+async def test_prod_command_menu_validation_checks_token_owner() -> None:
+    class FakeProdApi(FakeNoReplyBot):
+        async def get_me(self) -> dict[str, Any]:
+            return {"id": 1, "username": "Left4CasinoStageBot"}
+
+    with pytest.raises(smoke.SmokeFailureError, match="expected @Left4CasinoBot"):
+        await smoke.validate_command_menu(
+            FakeProdApi(),
+            bot_label="prod",
+            token_env_name="TELEGRAM_E2E_PROD_BOT_TOKEN",
+            expected_username="Left4CasinoBot",
+        )
 
 
 @pytest.mark.asyncio

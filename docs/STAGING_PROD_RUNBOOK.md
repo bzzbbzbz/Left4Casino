@@ -236,6 +236,18 @@ docker ps --filter name=python-runner
 docker logs python-runner --since 10m
 ```
 
+Для bot-to-bot smoke загрузите E2E env (`TELEGRAM_E2E_TESTER_TOKEN`, stage settings/db path и target chat) из защищённого local env, например `.env.e2e`, затем запустите prod target:
+
+```bash
+# Safe bot-to-bot smoke в общем test-чате со stage-ботом.
+TELEGRAM_E2E_SCENARIO=prod-smoke \
+TELEGRAM_E2E_PROD_BOT_USERNAME=Left4CasinoBot \
+TELEGRAM_E2E_TARGET_CHAT_ID=-1003497462507 \
+.venv/bin/python scripts/telegram_e2e_smoke.py
+```
+
+`prod-smoke` адресует команды как `/balance@Left4CasinoBot`, `/safe@Left4CasinoBot`, `/stats@Left4CasinoBot`, `/top@Left4CasinoBot`, `/help@Left4CasinoBot`. Он не запускает слоты, `/bid`, `/credit`, stage-only hooks и не читает prod DB напрямую. Штатная обработка этих команд prod-ботом может обновить activity/user rows, поэтому это не zero-write DB probe.
+
 Если production-ветка называется `main`, используйте `origin/main`.
 
 ---
@@ -298,8 +310,9 @@ sudo systemctl start left4casino-prod
 
 ## 14. Минимальный smoke-check после релиза
 
-- [ ] сервис `left4casino-prod` в статусе `active (running)`;
-- [ ] бот отвечает на `/start` или `/balance` в production-чате;
+- [ ] Docker container `python-runner` работает;
+- [ ] prod bot проходит `TELEGRAM_E2E_SCENARIO=prod-smoke` в test-чате;
+- [ ] бот отвечает на `/balance` в production-чате;
 - [ ] в логах нет traceback;
 - [ ] stage-бот продолжает работать отдельно;
 - [ ] production БД не изменилась путём/именем на stage-файл.

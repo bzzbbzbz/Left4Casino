@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""TASK-019 Telegram bot-to-bot smoke runner for the staging bot.
+"""TASK-019 Telegram bot-to-bot smoke runner for stage/prod target bots.
 
 The runner is intentionally opt-in and env-only: it never reads real bot tokens
 from project config files and validates that SQLite paths point at staging before
-any scenario messages are sent.
+any stage DB mutation is allowed.  The prod-smoke scenario is Telegram-visible
+only: it never accesses production DB directly and avoids economy-mutating steps.
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ from bot.money import decode_money
 ENV_TESTER_TOKEN = "TELEGRAM_E2E_TESTER_TOKEN"
 ENV_STAGE_BOT_TOKEN = "TELEGRAM_E2E_STAGE_BOT_TOKEN"
 ENV_STAGE_BOT_USERNAME = "TELEGRAM_E2E_STAGE_BOT_USERNAME"
+ENV_PROD_BOT_TOKEN = "TELEGRAM_E2E_PROD_BOT_TOKEN"
+ENV_PROD_BOT_USERNAME = "TELEGRAM_E2E_PROD_BOT_USERNAME"
 ENV_STAGE_SETTINGS_PATH = "TELEGRAM_E2E_STAGE_SETTINGS_PATH"
 ENV_STAGE_DB_PATH = "TELEGRAM_E2E_STAGE_DB_PATH"
 ENV_TARGET_CHAT_ID = "TELEGRAM_E2E_TARGET_CHAT_ID"
@@ -43,6 +46,16 @@ ENV_MAX_SPINS_UNTIL_WIN = "TELEGRAM_E2E_MAX_SPINS_UNTIL_WIN"
 ENV_SCHEDULE_STRICT = "TELEGRAM_E2E_SCHEDULE_STRICT"
 
 DEFAULT_STAGE_PREFIX = "/opt/left4casino/python-runner-stage"
+PROD_SMOKE_SCENARIO = "prod-smoke"
+SUPPORTED_SCENARIOS = {
+    "smoke",
+    "stage-parity",
+    "economy",
+    "schedule-readiness",
+    "events",
+    "event-flows",
+    PROD_SMOKE_SCENARIO,
+}
 DEFAULT_PROD_DB_PATHS = {
     Path("/root/n8n-install/python-runner/telegram-casino-bot/bot/casino.db"),
     Path("/root/n8n-install/python-runner/bot/casino.db"),
@@ -66,6 +79,8 @@ class E2EConfig:
     tester_token: str
     stage_bot_token: str | None
     stage_bot_username: str
+    prod_bot_token: str | None
+    prod_bot_username: str | None
     stage_settings_path: Path
     stage_db_path: Path
     target_chat_id: int | None
@@ -80,12 +95,37 @@ class E2EConfig:
     max_spins_until_win: int = 20
     schedule_strict: bool = False
 
+    @property
+    def target_bot_username(self) -> str:
+        if self.scenario == PROD_SMOKE_SCENARIO:
+            if self.prod_bot_username is None:
+                raise ConfigError(f"{ENV_PROD_BOT_USERNAME} is required for {PROD_SMOKE_SCENARIO}")
+            return self.prod_bot_username
+        return self.stage_bot_username
+
+    @property
+    def target_bot_label(self) -> str:
+        return "prod" if self.scenario == PROD_SMOKE_SCENARIO else "stage"
+
+    @property
+    def command_menu_token_env(self) -> str:
+        return ENV_PROD_BOT_TOKEN if self.scenario == PROD_SMOKE_SCENARIO else ENV_STAGE_BOT_TOKEN
+
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> E2EConfig:
         env = dict(os.environ if env is None else env)
         token = _required(env, ENV_TESTER_TOKEN)
         stage_token = _optional_secret(env.get(ENV_STAGE_BOT_TOKEN))
+        scenario = env.get(ENV_SCENARIO, "smoke").strip() or "smoke"
+        if scenario not in SUPPORTED_SCENARIOS:
+            raise ConfigError(f"unsupported scenario: {scenario}")
         username = _normalize_username(_required(env, ENV_STAGE_BOT_USERNAME))
+        prod_token = _optional_secret(env.get(ENV_PROD_BOT_TOKEN))
+        prod_username = (
+            _normalize_username(_required(env, ENV_PROD_BOT_USERNAME))
+            if scenario == PROD_SMOKE_SCENARIO
+            else _optional_username(env.get(ENV_PROD_BOT_USERNAME))
+        )
         settings_path = Path(_required(env, ENV_STAGE_SETTINGS_PATH)).expanduser()
         db_path = Path(_required(env, ENV_STAGE_DB_PATH)).expanduser()
         target_chat_id = _optional_int(env.get(ENV_TARGET_CHAT_ID), ENV_TARGET_CHAT_ID)
@@ -94,7 +134,6 @@ class E2EConfig:
         max_steps = _optional_int(env.get(ENV_MAX_STEPS), ENV_MAX_STEPS) or 30
         dry_run = _parse_bool(env.get(ENV_DRY_RUN, "false"))
         allowed_prefix = Path(env.get(ENV_ALLOWED_DB_PREFIX, DEFAULT_STAGE_PREFIX)).expanduser()
-        scenario = env.get(ENV_SCENARIO, "smoke").strip() or "smoke"
         allow_db_mutation = _parse_bool(env.get(ENV_ALLOW_DB_MUTATION, "false"))
         allow_event_hooks = _parse_bool(env.get(ENV_ALLOW_EVENT_HOOKS, "false"))
         max_spins = _optional_int(env.get(ENV_MAX_SPINS_UNTIL_WIN), ENV_MAX_SPINS_UNTIL_WIN) or 20
@@ -107,19 +146,17 @@ class E2EConfig:
             raise ConfigError(f"{ENV_MAX_STEPS} must be > 0")
         if max_spins <= 0:
             raise ConfigError(f"{ENV_MAX_SPINS_UNTIL_WIN} must be > 0")
-        if scenario not in {
-            "smoke",
-            "stage-parity",
-            "economy",
-            "schedule-readiness",
-            "events",
-            "event-flows",
-        }:
-            raise ConfigError(f"unsupported scenario: {scenario}")
+        if scenario == PROD_SMOKE_SCENARIO:
+            if allow_db_mutation:
+                raise ConfigError(f"{PROD_SMOKE_SCENARIO} refuses {ENV_ALLOW_DB_MUTATION}=1")
+            if allow_event_hooks:
+                raise ConfigError(f"{PROD_SMOKE_SCENARIO} refuses {ENV_ALLOW_EVENT_HOOKS}=1")
         return cls(
             tester_token=token,
             stage_bot_token=stage_token,
             stage_bot_username=username,
+            prod_bot_token=prod_token,
+            prod_bot_username=prod_username,
             stage_settings_path=settings_path,
             stage_db_path=db_path,
             target_chat_id=target_chat_id,
@@ -139,6 +176,7 @@ class E2EConfig:
         data = asdict(self)
         data["tester_token"] = "<redacted>"
         data["stage_bot_token"] = "<redacted>" if self.stage_bot_token else None
+        data["prod_bot_token"] = "<redacted>" if self.prod_bot_token else None
         data["stage_settings_path"] = str(self.stage_settings_path)
         data["stage_db_path"] = str(self.stage_db_path)
         data["allowed_db_prefix"] = str(self.allowed_db_prefix)
@@ -160,6 +198,7 @@ class PreflightResult:
     stage_bot_id: int
     stage_bot_username: str
     chat_title: str | None
+    target_bot: str = "stage"
 
 
 @dataclass
@@ -373,18 +412,21 @@ async def run_preflight(config: E2EConfig, api: BotApiProtocol) -> PreflightResu
     settings = parse_safe_stage_settings(config.stage_settings_path)
     target_chat_id = resolve_target_chat_id(config, settings)
     validate_stage_db_path(config.stage_db_path, config.allowed_db_prefix)
+    target_bot_username = config.target_bot_username
 
     tester = await api.get_me()
     tester_id = _coerce_int(tester.get("id"), "getMe.id")
     tester_username = str(tester.get("username") or "")
     stage_chat = await api.get_chat(target_chat_id)
-    stage_bot = await api.get_chat(f"@{config.stage_bot_username}")
+    stage_bot = await api.get_chat(f"@{target_bot_username}")
     stage_bot_id = _coerce_int(stage_bot.get("id"), "stage bot id")
     await api.get_chat_member(target_chat_id, tester_id)
     await api.get_chat_member(target_chat_id, stage_bot_id)
-    stage_username = str(stage_bot.get("username") or config.stage_bot_username)
-    if _normalize_username(stage_username).lower() != config.stage_bot_username.lower():
-        raise ConfigError("getChat stage bot username does not match configured username")
+    stage_username = str(stage_bot.get("username") or target_bot_username)
+    if _normalize_username(stage_username).lower() != target_bot_username.lower():
+        raise ConfigError(
+            f"getChat {config.target_bot_label} bot username does not match configured username"
+        )
     return PreflightResult(
         target_chat_id=target_chat_id,
         tester_bot_id=tester_id,
@@ -392,6 +434,7 @@ async def run_preflight(config: E2EConfig, api: BotApiProtocol) -> PreflightResu
         stage_bot_id=stage_bot_id,
         stage_bot_username=_normalize_username(stage_username),
         chat_title=stage_chat.get("title"),
+        target_bot=config.target_bot_label,
     )
 
 
@@ -412,6 +455,17 @@ def build_stage_parity_steps(stage_bot_username: str) -> list[ScenarioStep]:
     return [
         ScenarioStep("start-unhandled", "message_optional_reply", f"/start{suffix}"),
         ScenarioStep("balance", "message", f"/balance{suffix}"),
+    ]
+
+
+def build_prod_smoke_steps(prod_bot_username: str) -> list[ScenarioStep]:
+    suffix = f"@{_normalize_username(prod_bot_username)}"
+    return [
+        ScenarioStep("balance", "message", f"/balance{suffix}"),
+        ScenarioStep("safe", "message", f"/safe{suffix}"),
+        ScenarioStep("stats", "message", f"/stats{suffix}"),
+        ScenarioStep("top", "message", f"/top{suffix}"),
+        ScenarioStep("help", "message", f"/help{suffix}"),
     ]
 
 
@@ -439,6 +493,8 @@ def build_economy_steps(stage_bot_username: str, *, include_spin_loop: bool) -> 
 
 
 def build_scenario_steps(config: E2EConfig) -> list[ScenarioStep]:
+    if config.scenario == PROD_SMOKE_SCENARIO:
+        return build_prod_smoke_steps(config.target_bot_username)
     if config.scenario == "stage-parity":
         return build_stage_parity_steps(config.stage_bot_username)
     if config.scenario == "economy":
@@ -457,6 +513,7 @@ async def run_scenario(
 ) -> list[dict[str, Any]]:
     settings = parse_safe_stage_settings(config.stage_settings_path)
     steps = build_scenario_steps(config)
+    target_label = config.target_bot_label
     if len(steps) > config.max_steps:
         raise ConfigError("scenario step count exceeds configured max steps")
     reply_filter = StageReplyFilter(
@@ -481,6 +538,8 @@ async def run_scenario(
             replies: list[dict[str, Any]] = []
         else:
             if step.action == "db_set_balance":
+                if config.scenario == PROD_SMOKE_SCENARIO:
+                    raise ConfigError(f"{PROD_SMOKE_SCENARIO} does not allow DB mutation steps")
                 if step.setup_balance is None:
                     raise SmokeFailureError(f"missing setup balance for step {step.name}")
                 reset_tester_state_for_stage(config, preflight.tester_bot_id, step.setup_balance)
@@ -549,8 +608,10 @@ async def run_scenario(
                     db_validated = True
                 elif step.action != "message_optional_reply":
                     raise SmokeFailureError(
-                        f"timeout waiting for stage bot reply after step {step.name}"
+                        f"timeout waiting for {target_label} bot reply after step {step.name}"
                     )
+            if config.scenario == PROD_SMOKE_SCENARIO:
+                assert_prod_smoke_step_reply(step, replies)
             if step.name == "bid-all-in":
                 db_assertion = assert_bid_all_in(config.stage_db_path, preflight.tester_bot_id)
             elif step.name == "safe-deposit":
@@ -745,6 +806,28 @@ def assert_no_legacy_start_reply(replies: list[dict[str, Any]]) -> None:
             raise SmokeFailureError("/start exposed legacy casino welcome text")
         if "reply_markup" in reply:
             raise SmokeFailureError("/start exposed legacy reply keyboard markup")
+
+
+def assert_prod_smoke_step_reply(step: ScenarioStep, replies: list[dict[str, Any]]) -> None:
+    text = "\n".join(_message_text(reply) for reply in replies).lower()
+    if step.name == "help":
+        try:
+            assert_no_legacy_start_reply(replies)
+        except SmokeFailureError as exc:
+            raise SmokeFailureError("prod /help exposed legacy casino help text") from exc
+    required_fragments_by_step = {
+        "balance": ("баланс",),
+        "safe": ("сейф",),
+        "stats": ("статистика",),
+        "top": ("топ игроков",),
+        "help": ("команды left4casino", "/balance", "/safe", "/credit"),
+    }
+    required_fragments = required_fragments_by_step.get(step.name, ())
+    missing = [fragment for fragment in required_fragments if fragment not in text]
+    if missing:
+        raise SmokeFailureError(
+            f"prod {step.name} reply missing expected fragments: {', '.join(missing)}"
+        )
 
 
 def set_tester_balance_for_stage(config: E2EConfig, tester_user_id: int, balance: int) -> None:
@@ -1558,9 +1641,23 @@ def read_schedule_readiness(db_path: Path, *, strict: bool = False) -> dict[str,
     return result
 
 
-async def validate_stage_command_menu(stage_api: BotApiProtocol | None) -> dict[str, Any]:
-    if stage_api is None:
-        return {"skipped": f"{ENV_STAGE_BOT_TOKEN} not set"}
+async def validate_command_menu(
+    api: BotApiProtocol | None,
+    *,
+    bot_label: str,
+    token_env_name: str,
+    expected_username: str | None = None,
+) -> dict[str, Any]:
+    if api is None:
+        return {"skipped": f"{token_env_name} not set"}
+    if expected_username is not None:
+        me = await api.get_me()
+        actual_username = _normalize_username(str(me.get("username") or ""))
+        if actual_username.lower() != _normalize_username(expected_username).lower():
+            raise SmokeFailureError(
+                f"{bot_label} command menu token belongs to @{actual_username}, "
+                f"expected @{_normalize_username(expected_username)}"
+            )
     scopes = {
         "default": {"type": "default"},
         "all_private_chats": {"type": "all_private_chats"},
@@ -1570,29 +1667,46 @@ async def validate_stage_command_menu(stage_api: BotApiProtocol | None) -> dict[
     forbidden = {"start", "spin", "stop"}
     by_scope: dict[str, list[str]] = {}
     for scope_name, scope in scopes.items():
-        commands = await stage_api.get_my_commands(scope=scope)
+        commands = await api.get_my_commands(scope=scope)
         names = [str(command.get("command", "")) for command in commands]
         by_scope[scope_name] = names
         stale = sorted(forbidden.intersection(names))
         if stale:
             raise SmokeFailureError(
-                f"stage command menu advertises stale commands in {scope_name}: {', '.join(stale)}"
+                f"{bot_label} command menu advertises stale commands in {scope_name}: {', '.join(stale)}"
             )
     group_scope = {"type": "all_group_chats"}
     names = by_scope["all_group_chats"]
     missing = sorted(required.difference(names))
     if missing:
-        raise SmokeFailureError(f"stage command menu missing commands: {', '.join(missing)}")
+        raise SmokeFailureError(f"{bot_label} command menu missing commands: {', '.join(missing)}")
     return {"commands": names, "missing": [], "scope": group_scope, "scopes": by_scope}
 
 
+async def validate_stage_command_menu(stage_api: BotApiProtocol | None) -> dict[str, Any]:
+    return await validate_command_menu(
+        stage_api, bot_label="stage", token_env_name=ENV_STAGE_BOT_TOKEN
+    )
+
+
 async def execute(
-    config: E2EConfig, api: BotApiProtocol, stage_api: BotApiProtocol | None = None
+    config: E2EConfig,
+    api: BotApiProtocol,
+    stage_api: BotApiProtocol | None = None,
+    prod_api: BotApiProtocol | None = None,
 ) -> SmokeReport:
     report = SmokeReport(ok=False, config=config.redacted())
     preflight = await run_preflight(config, api)
     report.preflight = asdict(preflight)
-    report.command_menu = await validate_stage_command_menu(stage_api)
+    command_menu_api = prod_api if config.scenario == PROD_SMOKE_SCENARIO else stage_api
+    report.command_menu = await validate_command_menu(
+        command_menu_api,
+        bot_label=config.target_bot_label,
+        token_env_name=config.command_menu_token_env,
+        expected_username=config.target_bot_username
+        if config.scenario == PROD_SMOKE_SCENARIO and command_menu_api is not None
+        else None,
+    )
     if config.scenario == "schedule-readiness":
         report.schedule_readiness = read_schedule_readiness(
             config.stage_db_path, strict=config.schedule_strict
@@ -1602,6 +1716,13 @@ async def execute(
         return report
     if config.scenario in {"events", "event-flows"}:
         report.steps, report.db_assertions = await run_event_flows(config, api, preflight)
+        report.ok = True
+        return report
+    if config.scenario == PROD_SMOKE_SCENARIO:
+        report.steps = await run_scenario(config, api, preflight)
+        report.db_assertions = {
+            "skipped": "prod-smoke does not access production DB directly or run economy mutation steps"
+        }
         report.ok = True
         return report
     before = snapshot_user_state(config.stage_db_path, preflight.tester_bot_id)
@@ -1631,6 +1752,12 @@ def _optional_secret(value: str | None) -> str | None:
     if value is None or value.strip() == "":
         return None
     return value.strip()
+
+
+def _optional_username(value: str | None) -> str | None:
+    if value is None or value.strip() == "":
+        return None
+    return _normalize_username(value)
 
 
 def _parse_bool(value: str) -> bool:
@@ -1691,7 +1818,7 @@ def _message_text(message: dict[str, Any]) -> str:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run TASK-019/TASK-021 staging Telegram E2E smoke")
+    parser = argparse.ArgumentParser(description="Run TASK-019/TASK-021 Telegram E2E smoke")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -1699,7 +1826,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenario",
-        choices=["smoke", "stage-parity", "economy", "schedule-readiness", "events", "event-flows"],
+        choices=sorted(SUPPORTED_SCENARIOS),
         help=f"Override {ENV_SCENARIO}",
     )
     return parser.parse_args(argv)
@@ -1715,7 +1842,13 @@ async def async_main(argv: list[str]) -> int:
     try:
         config = E2EConfig.from_env(env)
         stage_api = TelegramBotApi(config.stage_bot_token) if config.stage_bot_token else None
-        report = await execute(config, TelegramBotApi(config.tester_token), stage_api)
+        prod_api = TelegramBotApi(config.prod_bot_token) if config.prod_bot_token else None
+        report = await execute(
+            config,
+            TelegramBotApi(config.tester_token),
+            stage_api=stage_api,
+            prod_api=prod_api,
+        )
     except (ConfigError, SmokeFailureError) as exc:
         safe_config: dict[str, Any] = {"error": "configuration not loaded"}
         try:
